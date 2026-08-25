@@ -232,17 +232,21 @@ function normalizeImportPack(data){
     connectExplanation:String(raw.connectExplanation||'').trim()
   })).filter(w=>w.word && w.core);
 }
-function openBulkImport(){
+function resetBulkImportUi(){
   pendingBulkData=null;
   $('bulkImportInput').value='';
-  $('bulkImportPreview').classList.add('hidden');
+  $('bulkImportPanel').classList.add('hidden');
   $('bulkImportPreview').innerHTML='';
   $('runBulkImport').disabled=true;
-  $('bulkImportDialog').showModal();
 }
-$('bulkImportBtn').onclick=openBulkImport;
-$('closeBulkImport').onclick=()=>$('bulkImportDialog').close();
-$('cancelBulkImport').onclick=()=>$('bulkImportDialog').close();
+function chooseBulkImportFile(){
+  // Reset first so choosing the same file again still triggers change.
+  $('bulkImportInput').value='';
+  $('bulkImportInput').click();
+}
+$('bulkImportBtn').addEventListener('click', chooseBulkImportFile);
+$('chooseBulkImportAgain').addEventListener('click', chooseBulkImportFile);
+$('closeBulkImport').addEventListener('click', resetBulkImportUi);
 $('bulkImportInput').addEventListener('change',e=>{
   const file=e.target.files?.[0]; if(!file)return;
   const reader=new FileReader();
@@ -253,12 +257,21 @@ $('bulkImportInput').addEventListener('change',e=>{
       if(!words.length) throw new Error('登録できる単語がありません');
       pendingBulkData={...data,words};
       const withImages=words.filter(w=>w.image).length;
-      $('bulkImportPreview').innerHTML=`<strong>${words.length}語を読み込みました（画像 ${withImages}件）</strong><div class="bulk-preview-list">${words.map(w=>escapeHtml(w.word)+(w.pos?` <small>(${escapeHtml(w.pos)})</small>`:'')).join(' / ')}</div>`;
-      $('bulkImportPreview').classList.remove('hidden');
+      const withUse=words.filter(w=>w.sentenceJa && w.sentenceEn).length;
+      const withConnect=words.filter(w=>w.choices.length>=2 && w.choices[w.correctChoice]).length;
+      $('bulkImportPreview').innerHTML=`<strong>${words.length}語を読み込みました</strong><div class="bulk-counts"><span>🖼️ 画像 ${withImages}</span><span>2️⃣ USE ${withUse}</span><span>3️⃣ CONNECT ${withConnect}</span></div><div class="bulk-preview-list">${words.map(w=>escapeHtml(w.word)+(w.pos?` <small>(${escapeHtml(w.pos)})</small>`:'')).join(' / ')}</div>`;
+      $('bulkImportPanel').classList.remove('hidden');
       $('runBulkImport').disabled=false;
     }catch(err){
-      console.error(err); pendingBulkData=null; $('runBulkImport').disabled=true; $('bulkImportPreview').classList.remove('hidden'); $('bulkImportPreview').innerHTML='<strong>読み込めませんでした</strong><div class="bulk-preview-list">Word Recall用の一括登録JSONか確認してください。</div>';
+      console.error(err); pendingBulkData=null; $('runBulkImport').disabled=true;
+      $('bulkImportPreview').innerHTML='<strong>読み込めませんでした</strong><div class="bulk-preview-list">Word Recall用の一括登録JSONか確認してください。</div>';
+      $('bulkImportPanel').classList.remove('hidden');
     }
+  };
+  reader.onerror=()=>{
+    pendingBulkData=null; $('runBulkImport').disabled=true;
+    $('bulkImportPreview').innerHTML='<strong>ファイルを読み込めませんでした</strong>';
+    $('bulkImportPanel').classList.remove('hidden');
   };
   reader.readAsText(file);
 });
@@ -276,8 +289,9 @@ $('runBulkImport').onclick=()=>{
     w.connectExplanation=raw.connectExplanation; w.updatedAt=Date.now();
     if(existing) updated++; else { state.words.push(w); added++; }
   }
-  saveState(); $('bulkImportDialog').close(); pendingBulkData=null;
-  toast(`一括登録：追加 ${added}語 / 更新 ${updated}語${skipped?` / スキップ ${skipped}語`:''}`);
+  saveState();
+  const msg=`一括登録：追加 ${added}語 / 更新 ${updated}語${skipped?` / スキップ ${skipped}語`:''}`;
+  resetBulkImportUi(); toast(msg);
 };
 
 $('exportBtn').onclick=()=>{ const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`word-recall-backup-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href); };

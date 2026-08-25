@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#111827" />
   <title>Word Recall</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=0.3" />
 </head>
 <body>
   <header class="app-header">
@@ -126,8 +126,29 @@
       <div class="section-head">
         <div><h2>単語管理</h2><p>単語・コアイメージ・画像・例文・類義語問題を登録/編集します。</p></div>
         <div class="head-actions">
-          <button id="bulkImportBtn" class="ghost-btn">⇩ 一括登録</button>
-          <button id="addWordBtn" class="primary-btn">＋ 単語を追加</button>
+          <button id="bulkImportBtn" class="ghost-btn" type="button">⇩ 一括登録</button>
+          <input id="bulkImportInput" type="file" accept="application/json,.json" hidden />
+          <button id="addWordBtn" class="primary-btn" type="button">＋ 単語を追加</button>
+        </div>
+      </div>
+      <div id="bulkImportPanel" class="card bulk-inline-panel hidden">
+        <div class="bulk-inline-head">
+          <div>
+            <h3>一括登録ファイル</h3>
+            <p>英単語・品詞・コアイメージ・画像に加え、2️⃣ USE と 3️⃣ CONNECT のデータもまとめて登録できます。</p>
+          </div>
+          <button type="button" id="closeBulkImport" class="icon-btn" aria-label="閉じる">×</button>
+        </div>
+        <div id="bulkImportPreview" class="bulk-preview"></div>
+        <fieldset class="duplicate-options">
+          <legend>同じ英単語がすでにある場合</legend>
+          <label><input type="radio" name="duplicateMode" value="update" checked> 学習履歴を残して内容を更新</label>
+          <label><input type="radio" name="duplicateMode" value="skip"> 既存単語を残してスキップ</label>
+        </fieldset>
+        <div class="dialog-actions bulk-actions">
+          <button type="button" id="chooseBulkImportAgain" class="ghost-btn">別のファイルを選ぶ</button>
+          <span class="spacer"></span>
+          <button type="button" id="runBulkImport" class="primary-btn" disabled>まとめて登録</button>
         </div>
       </div>
       <div id="wordList" class="word-list"></div>
@@ -184,30 +205,7 @@
 
 
 
-  <dialog id="bulkImportDialog" class="small-dialog">
-    <div class="bulk-dialog-body">
-      <div class="dialog-head"><h2>単語を一括登録</h2><button type="button" id="closeBulkImport" class="icon-btn">×</button></div>
-      <p class="dialog-lead">Word Recall用の一括登録JSONを1つ選ぶだけで、英単語・品詞・コアイメージ・画像・2️⃣/3️⃣のデータをまとめて追加できます。</p>
-      <label class="bulk-file-drop">
-        <strong>一括登録ファイルを選択</strong>
-        <span>JSONファイル（画像をファイル内に含められます）</span>
-        <input id="bulkImportInput" type="file" accept="application/json,.json" />
-      </label>
-      <div id="bulkImportPreview" class="bulk-preview hidden"></div>
-      <fieldset class="duplicate-options">
-        <legend>同じ英単語がすでにある場合</legend>
-        <label><input type="radio" name="duplicateMode" value="update" checked> 学習履歴を残して内容を更新</label>
-        <label><input type="radio" name="duplicateMode" value="skip"> 既存単語を残してスキップ</label>
-      </fieldset>
-      <div class="dialog-actions bulk-actions">
-        <button type="button" id="cancelBulkImport" class="ghost-btn">キャンセル</button>
-        <span class="spacer"></span>
-        <button type="button" id="runBulkImport" class="primary-btn" disabled>まとめて登録</button>
-      </div>
-    </div>
-  </dialog>
-
   <div id="toast" class="toast hidden"></div>
-  <script src="app.js"></script>
+  <script src="app.js?v=0.3"></script>
 </body>
 </html>

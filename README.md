@@ -70,7 +70,7 @@ iPhoneではSafariの共有メニューから「ホーム画面に追加」す�
 - 画像あり / 画像なしRecall切替
 - PWA化（オフラインキャッシュ）
 
-## v0.2: 単語の一括登録
+## v0.3: 単語の一括登録
 
 「単語管理」→「一括登録」から、Word Recall用のJSONファイルを読み込めます。
 JSONには英単語、品詞、日本語コアイメージ、画像（data URL）、USE/CONNECT用データをまとめて含められるため、1語ずつ手入力する必要はありません。
@@ -80,3 +80,15 @@ JSONには英単語、品詞、日本語コアイメージ、画像（data URL�
 - 既存単語を残してスキップ
 
 一括登録は「バックアップから復元」と違い、現在の単語を消さずに追加します。
+
+
+## v0.3 一括登録の変更
+
+- 一括登録ボタンは native `<dialog>` を使わず、直接ファイル選択を開く方式に変更しました。
+- ファイル選択後、単語管理画面内にプレビューが表示されます。
+- 一括登録JSONは以下をすべて含められます。
+  - `word` / `pos` / `core` / `image`
+  - 2️⃣ USE: `sentenceJa` / `sentenceEn` / `alternatives`
+  - 3️⃣ CONNECT: `choices` / `correctChoice` / `connectExplanation`
+- プレビューで「画像」「USE」「CONNECT」が何件入っているか確認できます。
+- `index.html` は `app.js?v=0.3` / `styles.css?v=0.3` を参照し、GitHub Pages更新時の古いキャッシュを避けます。
