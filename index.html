@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <title>Word Recall</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <div class="eyebrow">CORE IMAGE VOCAB</div>
+      <h1>Word Recall</h1>
+    </div>
+    <nav>
+      <button class="nav-btn active" data-view="home">学習</button>
+      <button class="nav-btn" data-view="words">単語管理</button>
+      <button class="nav-btn" data-view="stats">成績</button>
+      <button class="nav-btn" data-view="backup">バックアップ</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="view-home" class="view active">
+      <div class="hero card">
+        <div>
+          <span class="pill">1️⃣ Recall が中心</span>
+          <h2>意味と絵から、英単語を思い出す。</h2>
+          <p>忘れそうな単語を優先し、正解するほど復習間隔を伸ばします。</p>
+        </div>
+        <div class="hero-stats">
+          <div><strong id="homeTotal">0</strong><span>登録単語</span></div>
+          <div><strong id="homeDue">0</strong><span>今日の復習</span></div>
+          <div><strong id="homeMastered">0</strong><span>Level 5+</span></div>
+        </div>
+      </div>
+
+      <h3 class="section-title">学習モード</h3>
+      <div class="mode-grid">
+        <button class="mode-card" data-mode="recall">
+          <div class="mode-icon">⚡</div>
+          <h3>単語集中</h3>
+          <p><b>1️⃣ Recall</b></p>
+          <small>時間がない日に高速で回す</small>
+        </button>
+        <button class="mode-card" data-mode="recall-use">
+          <div class="mode-icon">🔹</div>
+          <h3>標準学習</h3>
+          <p><b>1️⃣ Recall + 2️⃣ Use</b></p>
+          <small>単語を思い出し、英文で使う</small>
+        </button>
+        <button class="mode-card" data-mode="full">
+          <div class="mode-icon">🔥</div>
+          <h3>深掘り学習</h3>
+          <p><b>1️⃣ + 2️⃣ + 3️⃣</b></p>
+          <small>類義語との意味ネットワークまで作る</small>
+        </button>
+      </div>
+      <div class="study-options card compact">
+        <label>1回の出題数
+          <select id="sessionSize">
+            <option value="10">10語</option>
+            <option value="20" selected>20語</option>
+            <option value="30">30語</option>
+            <option value="all">今日の対象をすべて</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="includeEarly" /> 復習日前の単語も追加練習する</label>
+      </div>
+      <div id="noWordsNotice" class="empty-state hidden">
+        まだ単語がありません。「単語管理」から最初の単語を登録してください。
+      </div>
+    </section>
+
+    <section id="view-study" class="view">
+      <div class="study-topbar">
+        <button id="quitStudy" class="ghost-btn">← 終了</button>
+        <div id="studyModeLabel" class="pill"></div>
+        <div id="studyProgress">0 / 0</div>
+      </div>
+      <div class="progress-track"><div id="progressBar"></div></div>
+
+      <div id="studyCard" class="study-card card">
+        <div id="stageBadge" class="stage-badge"></div>
+        <div id="recallStage" class="stage hidden">
+          <p class="prompt-label">このコアイメージに合う英単語は？</p>
+          <div id="coreImageWrap" class="core-image-wrap hidden"><img id="coreImage" alt="コアイメージ" /></div>
+          <div id="coreText" class="core-text"></div>
+          <form id="recallForm" autocomplete="off">
+            <input id="recallInput" class="answer-input" type="text" placeholder="英単語を入力" autocapitalize="none" spellcheck="false" />
+            <button class="primary-btn" type="submit">判定</button>
+          </form>
+          <div id="recallFeedback" class="feedback hidden"></div>
+        </div>
+
+        <div id="fixationStage" class="stage hidden">
+          <p class="prompt-label">記憶を固定</p>
+          <div id="fixImageWrap" class="core-image-wrap hidden"><img id="fixImage" alt="コアイメージ" /></div>
+          <div id="fixWord" class="fix-word"></div>
+          <div id="fixCore" class="fix-core"></div>
+          <button id="fixNext" class="primary-btn">次へ</button>
+        </div>
+
+        <div id="useStage" class="stage hidden">
+          <p class="prompt-label">2️⃣ USE：指定単語を使って英文にしてください</p>
+          <div class="target-chip">必須単語：<strong id="useTarget"></strong></div>
+          <div id="sentenceJa" class="sentence-ja"></div>
+          <form id="useForm" autocomplete="off">
+            <textarea id="useInput" class="answer-input textarea" rows="3" placeholder="英文を入力"></textarea>
+            <button class="primary-btn" type="submit">判定</button>
+          </form>
+          <div id="useFeedback" class="feedback hidden"></div>
+        </div>
+
+        <div id="connectStage" class="stage hidden">
+          <p class="prompt-label">3️⃣ CONNECT：最も意味が近い単語は？</p>
+          <div id="connectCore" class="core-text small"></div>
+          <div id="choiceList" class="choice-list"></div>
+          <div id="connectFeedback" class="feedback hidden"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-words" class="view">
+      <div class="section-head">
+        <div><h2>単語管理</h2><p>単語・コアイメージ・画像・例文・類義語問題を登録/編集します。</p></div>
+        <button id="addWordBtn" class="primary-btn">＋ 単語を追加</button>
+      </div>
+      <div id="wordList" class="word-list"></div>
+      <div id="wordEmpty" class="empty-state hidden">登録単語はまだありません。</div>
+    </section>
+
+    <section id="view-stats" class="view">
+      <div class="section-head"><div><h2>成績</h2><p>1️⃣ Recall を中心に、各ステップの成績を別々に記録します。</p></div></div>
+      <div id="statsSummary" class="summary-grid"></div>
+      <div class="card table-card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>単語</th><th>Level</th><th>Recall</th><th>平均回答</th><th>Use</th><th>Connect</th><th>次回</th></tr></thead>
+            <tbody id="statsTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-backup" class="view">
+      <div class="section-head"><div><h2>バックアップ</h2><p>登録内容と学習履歴をJSONファイルで保存・復元できます。画像も含まれます。</p></div></div>
+      <div class="backup-grid">
+        <div class="card"><h3>エクスポート</h3><p>現在の全データをファイルとして保存します。</p><button id="exportBtn" class="primary-btn">バックアップを書き出す</button></div>
+        <div class="card"><h3>インポート</h3><p>以前のバックアップから復元します。現在のデータは置き換わります。</p><label class="file-btn">バックアップを選択<input id="importInput" type="file" accept="application/json" /></label></div>
+        <div class="card danger-card"><h3>全データ削除</h3><p>この端末に保存された単語と学習履歴をすべて削除します。</p><button id="resetBtn" class="danger-btn">全データを削除</button></div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="wordDialog">
+    <form id="wordForm" method="dialog">
+      <div class="dialog-head"><h2 id="dialogTitle">単語を追加</h2><button type="button" id="closeDialog" class="icon-btn">×</button></div>
+      <input type="hidden" id="wordId" />
+      <div class="form-grid">
+        <label>英単語 <span>*</span><input id="fieldWord" required autocomplete="off" /></label>
+        <label>品詞<input id="fieldPos" placeholder="例: adjective" /></label>
+        <label class="wide">日本語のコアイメージ <span>*</span><textarea id="fieldCore" required rows="4" placeholder="単なる和訳ではなく、意味の芯を日本語で説明"></textarea></label>
+        <label class="wide">コアイメージ画像<input id="fieldImage" type="file" accept="image/*" /></label>
+        <div class="wide image-editor"><img id="imagePreview" class="hidden" alt="プレビュー" /><button type="button" id="removeImage" class="ghost-btn hidden">画像を削除</button></div>
+
+        <div class="form-section wide"><h3>2️⃣ USE</h3><p>標準学習・深掘り学習で使用します。未入力ならそのステップを自動でスキップします。</p></div>
+        <label class="wide">日本語例文<textarea id="fieldSentenceJa" rows="2" placeholder="例: 私は明日の会議が不安です。"></textarea></label>
+        <label class="wide">模範英文<textarea id="fieldSentenceEn" rows="2" placeholder="例: I'm anxious about tomorrow's meeting."></textarea></label>
+        <label class="wide">別解（1行に1つ）<textarea id="fieldAlternatives" rows="3" placeholder="自然な別解があれば入力"></textarea></label>
+
+        <div class="form-section wide"><h3>3️⃣ CONNECT</h3><p>選択肢は2〜6個。正解を1つ選びます。</p></div>
+        <div id="connectEditor" class="wide connect-editor"></div>
+        <button type="button" id="addChoice" class="ghost-btn wide">＋ 選択肢を追加</button>
+        <label class="wide">正解後の違い・補足<textarea id="fieldConnectExplanation" rows="3" placeholder="例: anxious は先のことが気になって落ち着かない。worried は問題や悪い結果を心配している。"></textarea></label>
+      </div>
+      <div class="dialog-actions"><button type="button" id="deleteWordBtn" class="danger-btn hidden">削除</button><span class="spacer"></span><button type="button" id="cancelWord" class="ghost-btn">キャンセル</button><button type="submit" class="primary-btn">保存</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>
