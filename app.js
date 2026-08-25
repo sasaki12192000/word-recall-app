@@ -8,6 +8,7 @@ const LEVEL_DAYS = [0,1,3,7,14,30,60,120];
 let state = defaultState();
 let session = null;
 let pendingImage = null;
+let pendingBulkData = null;
 
 const $ = (id) => document.getElementById(id);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -214,6 +215,70 @@ $('wordForm').addEventListener('submit',e=>{
   const rows=[...$('connectEditor').children]; w.choices=rows.map(r=>r.querySelector('.choiceText').value.trim()).filter(Boolean); const checkedRow=rows.find(r=>r.querySelector('input[type=radio]').checked); const checkedValue=checkedRow?.querySelector('.choiceText').value.trim(); w.correctChoice=Math.max(0,w.choices.indexOf(checkedValue)); w.updatedAt=Date.now(); if(!id)state.words.push(w); saveState(); $('wordDialog').close(); toast(id?'更新しました':'登録しました');
 });
 $('deleteWordBtn').onclick=()=>{ const id=$('wordId').value;if(!id)return;if(confirm('この単語を削除しますか？')){state.words=state.words.filter(w=>w.id!==id);saveState();$('wordDialog').close();toast('削除しました')}};
+
+
+function normalizeImportPack(data){
+  if(!data || !Array.isArray(data.words)) throw new Error('words がありません');
+  return data.words.map(raw=>({
+    word:String(raw.word||'').trim(),
+    pos:String(raw.pos||'').trim(),
+    core:String(raw.core||'').trim(),
+    image:(typeof raw.image==='string' && raw.image.startsWith('data:image/')) ? raw.image : null,
+    sentenceJa:String(raw.sentenceJa||'').trim(),
+    sentenceEn:String(raw.sentenceEn||'').trim(),
+    alternatives:Array.isArray(raw.alternatives)?raw.alternatives.map(x=>String(x).trim()).filter(Boolean):[],
+    choices:Array.isArray(raw.choices)?raw.choices.map(x=>String(x).trim()).filter(Boolean).slice(0,6):[],
+    correctChoice:Number.isInteger(raw.correctChoice)?raw.correctChoice:0,
+    connectExplanation:String(raw.connectExplanation||'').trim()
+  })).filter(w=>w.word && w.core);
+}
+function openBulkImport(){
+  pendingBulkData=null;
+  $('bulkImportInput').value='';
+  $('bulkImportPreview').classList.add('hidden');
+  $('bulkImportPreview').innerHTML='';
+  $('runBulkImport').disabled=true;
+  $('bulkImportDialog').showModal();
+}
+$('bulkImportBtn').onclick=openBulkImport;
+$('closeBulkImport').onclick=()=>$('bulkImportDialog').close();
+$('cancelBulkImport').onclick=()=>$('bulkImportDialog').close();
+$('bulkImportInput').addEventListener('change',e=>{
+  const file=e.target.files?.[0]; if(!file)return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    try{
+      const data=JSON.parse(reader.result);
+      const words=normalizeImportPack(data);
+      if(!words.length) throw new Error('登録できる単語がありません');
+      pendingBulkData={...data,words};
+      const withImages=words.filter(w=>w.image).length;
+      $('bulkImportPreview').innerHTML=`<strong>${words.length}語を読み込みました（画像 ${withImages}件）</strong><div class="bulk-preview-list">${words.map(w=>escapeHtml(w.word)+(w.pos?` <small>(${escapeHtml(w.pos)})</small>`:'')).join(' / ')}</div>`;
+      $('bulkImportPreview').classList.remove('hidden');
+      $('runBulkImport').disabled=false;
+    }catch(err){
+      console.error(err); pendingBulkData=null; $('runBulkImport').disabled=true; $('bulkImportPreview').classList.remove('hidden'); $('bulkImportPreview').innerHTML='<strong>読み込めませんでした</strong><div class="bulk-preview-list">Word Recall用の一括登録JSONか確認してください。</div>';
+    }
+  };
+  reader.readAsText(file);
+});
+$('runBulkImport').onclick=()=>{
+  if(!pendingBulkData)return;
+  const mode=document.querySelector('input[name="duplicateMode"]:checked')?.value||'update';
+  let added=0,updated=0,skipped=0;
+  for(const raw of pendingBulkData.words){
+    const existing=state.words.find(w=>normalizeWord(w.word)===normalizeWord(raw.word));
+    if(existing && mode==='skip'){ skipped++; continue; }
+    const w=existing||newWordTemplate();
+    w.word=raw.word; w.pos=raw.pos; w.core=raw.core; w.image=raw.image;
+    w.sentenceJa=raw.sentenceJa; w.sentenceEn=raw.sentenceEn; w.alternatives=raw.alternatives;
+    w.choices=raw.choices; w.correctChoice=Math.min(Math.max(0,raw.correctChoice),Math.max(0,raw.choices.length-1));
+    w.connectExplanation=raw.connectExplanation; w.updatedAt=Date.now();
+    if(existing) updated++; else { state.words.push(w); added++; }
+  }
+  saveState(); $('bulkImportDialog').close(); pendingBulkData=null;
+  toast(`一括登録：追加 ${added}語 / 更新 ${updated}語${skipped?` / スキップ ${skipped}語`:''}`);
+};
 
 $('exportBtn').onclick=()=>{ const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`word-recall-backup-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href); };
 $('importInput').addEventListener('change',e=>{ const file=e.target.files?.[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{ try{ const data=JSON.parse(reader.result); if(!Array.isArray(data.words))throw new Error(); if(confirm('現在のデータをバックアップ内容で置き換えますか？')){state=migrate(data);saveState();toast('復元しました')}}catch{alert('有効なバックアップファイルではありません')} e.target.value='';}; reader.readAsText(file); });
