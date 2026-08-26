@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#111827" />
   <title>Word Recall</title>
-  <link rel="stylesheet" href="styles.css?v=0.3" />
+  <link rel="stylesheet" href="styles.css?v=0.4" />
 </head>
 <body>
   <header class="app-header">
@@ -86,10 +86,12 @@
         <div id="recallStage" class="stage hidden">
           <p class="prompt-label">このコアイメージに合う英単語は？</p>
           <div id="coreImageWrap" class="core-image-wrap hidden"><img id="coreImage" alt="コアイメージ" /></div>
+          <div id="recallPos" class="recall-pos hidden"></div>
           <div id="coreText" class="core-text"></div>
           <form id="recallForm" autocomplete="off">
             <input id="recallInput" class="answer-input" type="text" placeholder="英単語を入力" autocapitalize="none" spellcheck="false" />
             <button class="primary-btn" type="submit">判定</button>
+            <button id="dontKnowBtn" class="dont-know-btn" type="button">わからない</button>
           </form>
           <div id="recallFeedback" class="feedback hidden"></div>
         </div>
@@ -98,6 +100,7 @@
           <p class="prompt-label">記憶を固定</p>
           <div id="fixImageWrap" class="core-image-wrap hidden"><img id="fixImage" alt="コアイメージ" /></div>
           <div id="fixWord" class="fix-word"></div>
+          <button id="replayAudio" class="audio-replay-btn" type="button">🔊 もう一度聞く</button>
           <div id="fixCore" class="fix-core"></div>
           <button id="fixNext" class="primary-btn">次へ</button>
         </div>
@@ -206,6 +209,6 @@
 
 
   <div id="toast" class="toast hidden"></div>
-  <script src="app.js?v=0.3"></script>
+  <script src="app.js?v=0.4"></script>
 </body>
 </html>

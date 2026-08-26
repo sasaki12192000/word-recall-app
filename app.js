@@ -58,6 +58,22 @@ function startDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate()).
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
 function toast(msg){ $('toast').textContent=msg; $('toast').classList.remove('hidden'); clearTimeout(toast.t); toast.t=setTimeout(()=>$('toast').classList.add('hidden'),2200); }
 
+function speakEnglish(text){
+  if(!text || !('speechSynthesis' in window)) return;
+  try{
+    window.speechSynthesis.cancel();
+    const utterance=new SpeechSynthesisUtterance(text);
+    utterance.lang='en-US';
+    utterance.rate=0.88;
+    utterance.pitch=1;
+    const voices=window.speechSynthesis.getVoices?.()||[];
+    const voice=voices.find(v=>/^en-US$/i.test(v.lang)) || voices.find(v=>/^en-US/i.test(v.lang)) || voices.find(v=>/^en/i.test(v.lang));
+    if(voice) utterance.voice=voice;
+    window.speechSynthesis.speak(utterance);
+  }catch(err){ console.warn('Speech synthesis failed',err); }
+}
+
+
 function renderAll(){ renderHome(); renderWords(); renderStats(); }
 function renderHome(){
   const now=Date.now(); $('homeTotal').textContent=state.words.length; $('homeDue').textContent=state.words.filter(w=>(w.stats.nextDueAt||0)<=now).length; $('homeMastered').textContent=state.words.filter(w=>w.stats.level>=5).length; $('noWordsNotice').classList.toggle('hidden',state.words.length>0);
@@ -103,7 +119,7 @@ function startStudy(mode){
   candidates=weightedOrder(candidates);
   const size=$('sessionSize').value; if(size!=='all') candidates=candidates.slice(0,Number(size));
   session={mode, queue:candidates.map(w=>w.id), index:0, initialCount:candidates.length, completed:0, currentId:null, recallStart:0, requeued:{}};
-  $('studyModeLabel').textContent= mode==='recall'?'⚡ 1️⃣ Recall':mode==='recall-use'?'🔹 1️⃣ + 2️⃣':'🔥 1️⃣ + 2️⃣ + 3️⃣';
+  $('studyModeLabel').textContent= mode==='recall'?'⚡ 単語集中':mode==='recall-use'?'🔹 標準学習':'🔥 深掘り学習';
   showView('study'); nextWord();
 }
 $$('.mode-card').forEach(b=>b.addEventListener('click',()=>startStudy(b.dataset.mode)));
@@ -123,21 +139,68 @@ function finishSession(){
 }
 function hideStages(){ ['recallStage','fixationStage','useStage','connectStage'].forEach(id=>$(id).classList.add('hidden')); }
 function showRecall(w){
-  hideStages(); $('recallStage').classList.remove('hidden'); $('stageBadge').textContent='1️⃣ RECALL'; $('coreText').textContent=w.core; $('recallInput').value=''; $('recallFeedback').className='feedback hidden';
+  hideStages();
+  $('recallStage').classList.remove('hidden');
+  $('stageBadge').classList.add('hidden');
+  $('coreText').textContent=w.core;
+  $('recallInput').value='';
+  $('recallFeedback').className='feedback hidden';
   if(w.image){ $('coreImage').src=w.image; $('coreImageWrap').classList.remove('hidden'); } else $('coreImageWrap').classList.add('hidden');
-  session.recallStart=performance.now(); setTimeout(()=>$('recallInput').focus(),100);
+  if((w.pos||'').trim()){
+    $('recallPos').textContent=w.pos.trim();
+    $('recallPos').classList.remove('hidden');
+  } else {
+    $('recallPos').textContent='';
+    $('recallPos').classList.add('hidden');
+  }
+  session.recallStart=performance.now();
+  setTimeout(()=>$('recallInput').focus(),100);
+}
+function gradeRecall(w,ok,userInput=''){
+  if(!session || !w)return;
+  const elapsed=Math.max(200,performance.now()-session.recallStart);
+  const r=w.stats.recall;
+  r.attempts++;
+  r.totalMs+=elapsed;
+  if(ok){
+    r.correct++; r.streak++; r.wrongStreak=0; r.lastCorrectAt=Date.now();
+    w.stats.level=Math.min(7,(w.stats.level||0)+1);
+    w.stats.nextDueAt=Date.now()+LEVEL_DAYS[w.stats.level]*DAY;
+    saveState(); showFixation(w,true);
+  } else {
+    r.streak=0; r.wrongStreak++; r.lastWrongAt=Date.now();
+    w.stats.level=Math.max(0,(w.stats.level||0)-2);
+    w.stats.nextDueAt=Date.now();
+    scheduleRetry(w.id);
+    saveState(); showFixation(w,false,userInput);
+  }
 }
 $('recallForm').addEventListener('submit',e=>{
-  e.preventDefault(); if(!session)return; const w=getWord(session.currentId); const input=$('recallInput').value; if(!input.trim())return;
-  const elapsed=Math.max(200,performance.now()-session.recallStart); const ok=normalizeWord(input)===normalizeWord(w.word); const r=w.stats.recall; r.attempts++; r.totalMs+=elapsed;
-  if(ok){ r.correct++; r.streak++; r.wrongStreak=0; r.lastCorrectAt=Date.now(); w.stats.level=Math.min(7,(w.stats.level||0)+1); w.stats.nextDueAt=Date.now()+LEVEL_DAYS[w.stats.level]*DAY; saveState(); showFixation(w,true); }
-  else { r.streak=0; r.wrongStreak++; r.lastWrongAt=Date.now(); w.stats.level=Math.max(0,(w.stats.level||0)-2); w.stats.nextDueAt=Date.now(); scheduleRetry(w.id); saveState(); showFixation(w,false,input); }
+  e.preventDefault();
+  if(!session)return;
+  const w=getWord(session.currentId);
+  const input=$('recallInput').value;
+  if(!input.trim())return;
+  gradeRecall(w,normalizeWord(input)===normalizeWord(w.word),input);
+});
+$('dontKnowBtn').addEventListener('click',()=>{
+  if(!session)return;
+  const w=getWord(session.currentId);
+  gradeRecall(w,false,'');
 });
 function scheduleRetry(id){
   if(!session)return; const already=session.requeued[id]||0; if(already>=2)return; session.requeued[id]=already+1; const gap=5+Math.floor(Math.random()*6); const insertAt=Math.min(session.queue.length,session.index+gap); session.queue.splice(insertAt,0,id); updateStudyProgress();
 }
 function showFixation(w,wasCorrect,userInput=''){
-  hideStages(); $('fixationStage').classList.remove('hidden'); $('stageBadge').textContent=wasCorrect?'✅ 正解':'❌ 不正解'; $('fixWord').textContent=w.word; $('fixCore').textContent=w.core; if(w.image){$('fixImage').src=w.image;$('fixImageWrap').classList.remove('hidden')} else $('fixImageWrap').classList.add('hidden');
+  hideStages();
+  $('fixationStage').classList.remove('hidden');
+  $('stageBadge').classList.remove('hidden');
+  $('stageBadge').textContent=wasCorrect?'✅ 正解':'❌ 不正解';
+  $('fixWord').textContent=w.word;
+  $('fixCore').textContent=w.core;
+  if(w.image){$('fixImage').src=w.image;$('fixImageWrap').classList.remove('hidden')} else $('fixImageWrap').classList.add('hidden');
+  $('replayAudio').onclick=()=>speakEnglish(w.word);
+  speakEnglish(w.word);
   $('fixNext').textContent = wasCorrect ? ((session.mode==='recall')?'次の単語':'次へ') : '次の単語';
   $('fixNext').onclick=()=>{
     if(!wasCorrect || session.mode==='recall'){ completeCurrent(); return; }
@@ -149,7 +212,7 @@ function showFixation(w,wasCorrect,userInput=''){
 function completeCurrent(){ session.completed++; saveState(); nextWord(); }
 
 function showUse(w){
-  hideStages(); $('useStage').classList.remove('hidden'); $('stageBadge').textContent='2️⃣ USE'; $('useTarget').textContent=w.word; $('sentenceJa').textContent=w.sentenceJa; $('useInput').value=''; $('useFeedback').className='feedback hidden'; setTimeout(()=>$('useInput').focus(),100);
+  hideStages(); $('useStage').classList.remove('hidden'); $('stageBadge').classList.remove('hidden'); $('stageBadge').textContent='2️⃣ USE'; $('useTarget').textContent=w.word; $('sentenceJa').textContent=w.sentenceJa; $('useInput').value=''; $('useFeedback').className='feedback hidden'; setTimeout(()=>$('useInput').focus(),100);
 }
 $('useForm').addEventListener('submit',e=>{
   e.preventDefault(); const w=getWord(session.currentId), ans=$('useInput').value.trim(); if(!ans)return; const u=w.stats.use; u.attempts++;
@@ -173,7 +236,7 @@ function afterUse(w){ if(session.mode==='full' && hasConnect(w)) showConnect(w);
 function hasConnect(w){ return Array.isArray(w.choices) && w.choices.filter(Boolean).length>=2 && Number.isInteger(w.correctChoice) && w.choices[w.correctChoice]; }
 
 function showConnect(w){
-  hideStages(); $('connectStage').classList.remove('hidden'); $('stageBadge').textContent='3️⃣ CONNECT'; $('connectCore').textContent=w.core; $('connectFeedback').className='feedback hidden'; $('connectFeedback').dataset.answered='0'; const list=$('choiceList'); list.innerHTML='';
+  hideStages(); $('connectStage').classList.remove('hidden'); $('stageBadge').classList.remove('hidden'); $('stageBadge').textContent='3️⃣ CONNECT'; $('connectCore').textContent=w.core; $('connectFeedback').className='feedback hidden'; $('connectFeedback').dataset.answered='0'; const list=$('choiceList'); list.innerHTML='';
   w.choices.forEach((choice,i)=>{ if(!choice)return; const b=document.createElement('button'); b.className='choice-btn'; b.textContent=choice; b.onclick=()=>answerConnect(w,i,b); list.appendChild(b); });
 }
 function answerConnect(w,i,button){
