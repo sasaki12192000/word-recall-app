@@ -20,7 +20,6 @@
       <button class="nav-btn" data-view="backup">バックアップ</button>
     </nav>
   </header>
-
   <main>
     <section id="view-home" class="view active">
       <div class="hero card">
@@ -35,7 +34,6 @@
           <div><strong id="homeMastered">0</strong><span>Level 5+</span></div>
         </div>
       </div>
-
       <h3 class="section-title">学習モード</h3>
       <div class="mode-grid">
         <button class="mode-card" data-mode="recall">
@@ -72,7 +70,6 @@
         まだ単語がありません。「単語管理」から最初の単語を登録してください。
       </div>
     </section>
-
     <section id="view-study" class="view">
       <div class="study-topbar">
         <button id="quitStudy" class="ghost-btn">← 終了</button>
@@ -80,7 +77,6 @@
         <div id="studyProgress">0 / 0</div>
       </div>
       <div class="progress-track"><div id="progressBar"></div></div>
-
       <div id="studyCard" class="study-card card">
         <div id="stageBadge" class="stage-badge"></div>
         <div id="recallStage" class="stage hidden">
@@ -95,7 +91,6 @@
           </form>
           <div id="recallFeedback" class="feedback hidden"></div>
         </div>
-
         <div id="fixationStage" class="stage hidden">
           <p class="prompt-label">記憶を固定</p>
           <div id="fixImageWrap" class="core-image-wrap hidden"><img id="fixImage" alt="コアイメージ" /></div>
@@ -104,7 +99,6 @@
           <div id="fixCore" class="fix-core"></div>
           <button id="fixNext" class="primary-btn">次へ</button>
         </div>
-
         <div id="useStage" class="stage hidden">
           <p class="prompt-label">2️⃣ USE：指定単語を使って英文にしてください</p>
           <div class="target-chip">必須単語：<strong id="useTarget"></strong></div>
@@ -115,7 +109,6 @@
           </form>
           <div id="useFeedback" class="feedback hidden"></div>
         </div>
-
         <div id="connectStage" class="stage hidden">
           <p class="prompt-label">3️⃣ CONNECT：最も意味が近い単語は？</p>
           <div id="connectCore" class="core-text small"></div>
@@ -124,7 +117,6 @@
         </div>
       </div>
     </section>
-
     <section id="view-words" class="view">
       <div class="section-head">
         <div><h2>単語管理</h2><p>単語・コアイメージ・画像・例文・類義語問題を登録/編集します。</p></div>
@@ -133,6 +125,15 @@
           <input id="bulkImportInput" type="file" accept="application/json,.json" hidden />
           <button id="addWordBtn" class="primary-btn" type="button">＋ 単語を追加</button>
         </div>
+      </div>
+      <div class="word-sort-bar" aria-label="単語一覧の並び替え">
+        <span class="word-sort-label">並び替え</span>
+        <select id="wordSortKey" class="word-sort-select" aria-label="並び替え項目">
+          <option value="alpha">アルファベット順</option>
+          <option value="created">登録順</option>
+          <option value="accuracy">Recall 正解率順</option>
+        </select>
+        <button id="wordSortDirection" class="ghost-btn" type="button">↑ A → Z</button>
       </div>
       <div id="bulkImportPanel" class="card bulk-inline-panel hidden">
         <div class="bulk-inline-head">
@@ -157,7 +158,6 @@
       <div id="wordList" class="word-list"></div>
       <div id="wordEmpty" class="empty-state hidden">登録単語はまだありません。</div>
     </section>
-
     <section id="view-stats" class="view">
       <div class="section-head"><div><h2>成績</h2><p>1️⃣ Recall を中心に、各ステップの成績を別々に記録します。</p></div></div>
       <div id="statsSummary" class="summary-grid"></div>
@@ -170,7 +170,6 @@
         </div>
       </div>
     </section>
-
     <section id="view-backup" class="view">
       <div class="section-head"><div><h2>バックアップ</h2><p>登録内容と学習履歴をJSONファイルで保存・復元できます。画像も含まれます。</p></div></div>
       <div class="backup-grid">
@@ -180,7 +179,6 @@
       </div>
     </section>
   </main>
-
   <dialog id="wordDialog">
     <form id="wordForm" method="dialog">
       <div class="dialog-head"><h2 id="dialogTitle">単語を追加</h2><button type="button" id="closeDialog" class="icon-btn">×</button></div>
@@ -191,12 +189,10 @@
         <label class="wide">日本語のコアイメージ <span>*</span><textarea id="fieldCore" required rows="4" placeholder="単なる和訳ではなく、意味の芯を日本語で説明"></textarea></label>
         <label class="wide">コアイメージ画像<input id="fieldImage" type="file" accept="image/*" /></label>
         <div class="wide image-editor"><img id="imagePreview" class="hidden" alt="プレビュー" /><button type="button" id="removeImage" class="ghost-btn hidden">画像を削除</button></div>
-
         <div class="form-section wide"><h3>2️⃣ USE</h3><p>標準学習・深掘り学習で使用します。未入力ならそのステップを自動でスキップします。</p></div>
         <label class="wide">日本語例文<textarea id="fieldSentenceJa" rows="2" placeholder="例: 私は明日の会議が不安です。"></textarea></label>
         <label class="wide">模範英文<textarea id="fieldSentenceEn" rows="2" placeholder="例: I'm anxious about tomorrow's meeting."></textarea></label>
         <label class="wide">別解（1行に1つ）<textarea id="fieldAlternatives" rows="3" placeholder="自然な別解があれば入力"></textarea></label>
-
         <div class="form-section wide"><h3>3️⃣ CONNECT</h3><p>選択肢は2〜6個。正解を1つ選びます。</p></div>
         <div id="connectEditor" class="wide connect-editor"></div>
         <button type="button" id="addChoice" class="ghost-btn wide">＋ 選択肢を追加</button>
@@ -205,10 +201,8 @@
       <div class="dialog-actions"><button type="button" id="deleteWordBtn" class="danger-btn hidden">削除</button><span class="spacer"></span><button type="button" id="cancelWord" class="ghost-btn">キャンセル</button><button type="submit" class="primary-btn">保存</button></div>
     </form>
   </dialog>
-
-
-
   <div id="toast" class="toast hidden"></div>
   <script src="app.js?v=0.4"></script>
+  <script src="ui-v0.5.js?v=0.5"></script>
 </body>
 </html>
