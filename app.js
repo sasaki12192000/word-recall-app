@@ -1,50 +1,288 @@
 'use strict';
 
 const DB_NAME = 'WordRecallDB';
+const DB_VERSION = 2;
 const STORE_NAME = 'app';
+const IMAGE_STORE = 'images';
 const STATE_KEY = 'state';
 const DAY = 86400000;
 const LEVEL_DAYS = [0,1,3,7,14,30,60,120];
 let state = defaultState();
 let session = null;
-let pendingImage = null;
 let pendingBulkData = null;
+let dbPromise = null;
+let saveChain = Promise.resolve();
+let migratedImageCount = 0;
+let migrationWarning = false;
+
+// Image data is intentionally kept OUT of `state`.
+// The lightweight vocabulary/statistics state lives in STORE_NAME,
+// while image Blobs live separately in IMAGE_STORE keyed by word id.
+const imageUrlCache = new Map();
+let pendingImageMode = 'unchanged'; // unchanged | replace | remove
+let pendingImageBlob = null;
+let pendingPreviewUrl = null;
 
 const $ = (id) => document.getElementById(id);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
 
-function defaultState(){ return { version:1, words:[], settings:{} }; }
+function defaultState(){ return { version:2, words:[], settings:{} }; }
 function openDb(){
-  return new Promise((resolve,reject)=>{
-    const req=indexedDB.open(DB_NAME,1);
-    req.onupgradeneeded=()=>{ const db=req.result; if(!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME); };
-    req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error);
+  if(dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve,reject)=>{
+    const req=indexedDB.open(DB_NAME,DB_VERSION);
+    req.onupgradeneeded=()=>{
+      const db=req.result;
+      if(!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME);
+      if(!db.objectStoreNames.contains(IMAGE_STORE)) db.createObjectStore(IMAGE_STORE);
+    };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>{ dbPromise=null; reject(req.error); };
+    req.onblocked=()=>console.warn('IndexedDB upgrade is blocked by another open tab.');
   });
+  return dbPromise;
 }
-async function loadState(){
-  try{
-    const db=await openDb();
-    const data=await new Promise((resolve,reject)=>{ const tx=db.transaction(STORE_NAME,'readonly'); const req=tx.objectStore(STORE_NAME).get(STATE_KEY); req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error); });
-    db.close(); return data ? migrate(data) : defaultState();
-  }catch(e){ console.error('IndexedDB load failed',e); return defaultState(); }
+function stateForStorage(source=state){
+  return {
+    ...source,
+    version:2,
+    words:(source.words||[]).map(w=>{
+      const clean={...w,hasImage:!!w.hasImage};
+      delete clean.image;
+      return clean;
+    })
+  };
 }
 function migrate(s){
   const base = defaultState();
-  s = {...base,...s};
-  s.words = (s.words||[]).map(w => ({...newWordTemplate(),...w, stats:{...newWordTemplate().stats,...(w.stats||{}), recall:{...newWordTemplate().stats.recall,...(w.stats?.recall||{})}, use:{...newWordTemplate().stats.use,...(w.stats?.use||{})}, connect:{...newWordTemplate().stats.connect,...(w.stats?.connect||{})}}}));
+  s = {...base,...s,version:2};
+  s.words = (s.words||[]).map(w => {
+    const template=newWordTemplate();
+    const merged={...template,...w, stats:{...template.stats,...(w.stats||{}), recall:{...template.stats.recall,...(w.stats?.recall||{})}, use:{...template.stats.use,...(w.stats?.use||{})}, connect:{...template.stats.connect,...(w.stats?.connect||{})}}};
+    merged.hasImage=!!(w.hasImage || (typeof w.image==='string' && w.image.startsWith('data:image/')));
+    return merged;
+  });
   return s;
 }
-async function persistState(){
-  try{
+function dataUrlToBlob(dataUrl){
+  if(typeof dataUrl!=='string' || !dataUrl.startsWith('data:')) throw new Error('Invalid image data');
+  const comma=dataUrl.indexOf(',');
+  if(comma<0) throw new Error('Invalid image data');
+  const meta=dataUrl.slice(0,comma);
+  const body=dataUrl.slice(comma+1);
+  const mime=(meta.match(/^data:([^;]+)/)||[])[1]||'application/octet-stream';
+  if(/;base64/i.test(meta)){
+    const bin=atob(body);
+    const bytes=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    return new Blob([bytes],{type:mime});
+  }
+  return new Blob([decodeURIComponent(body)],{type:mime});
+}
+function blobToDataUrl(blob){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result);
+    reader.onerror=()=>reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+async function readRawState(){
+  const db=await openDb();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(STORE_NAME,'readonly');
+    const req=tx.objectStore(STORE_NAME).get(STATE_KEY);
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function migrateEmbeddedImagesIfNeeded(source){
+  let count=0;
+  // Move one image at a time. Each step atomically writes the image Blob and
+  // removes only that image from the old state record. This means an interrupted
+  // migration can safely continue on the next launch without recreating images.
+  for(const w of (source.words||[])){
+    if(typeof w.image!=='string' || !w.image.startsWith('data:image/')) continue;
+    const blob=dataUrlToBlob(w.image);
+    const originalImage=w.image;
+    delete w.image;
+    w.hasImage=true;
+    try{
+      const db=await openDb();
+      await new Promise((resolve,reject)=>{
+        const tx=db.transaction([STORE_NAME,IMAGE_STORE],'readwrite');
+        tx.objectStore(IMAGE_STORE).put(blob,w.id);
+        // Keep still-unmigrated image fields on the other words as a checkpoint.
+        tx.objectStore(STORE_NAME).put(source,STATE_KEY);
+        tx.oncomplete=resolve;
+        tx.onerror=()=>reject(tx.error);
+        tx.onabort=()=>reject(tx.error||new Error('Image migration aborted'));
+      });
+      count++;
+    }catch(err){
+      // Restore the in-memory legacy image. The database transaction was atomic,
+      // so this image remains in its original location as well.
+      w.image=originalImage;
+      throw err;
+    }
+  }
+
+  const clean=stateForStorage(source);
+  if(count || (source.words||[]).some(w=>Object.prototype.hasOwnProperty.call(w,'image'))){
     const db=await openDb();
-    await new Promise((resolve,reject)=>{ const tx=db.transaction(STORE_NAME,'readwrite'); tx.objectStore(STORE_NAME).put(state,STATE_KEY); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); });
-    db.close();
-  }catch(e){ console.error('IndexedDB save failed',e); toast('保存に失敗しました。ブラウザ容量をご確認ください。'); }
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction(STORE_NAME,'readwrite');
+      tx.objectStore(STORE_NAME).put(clean,STATE_KEY);
+      tx.oncomplete=resolve;
+      tx.onerror=()=>reject(tx.error);
+    });
+  }
+  return {state:clean,count};
+}
+async function loadState(){
+  let raw;
+  try{
+    raw=await readRawState();
+  }catch(e){
+    console.error('IndexedDB load failed',e);
+    return defaultState();
+  }
+  if(!raw) return defaultState();
+  const migrated=migrate(raw);
+  try{
+    const result=await migrateEmbeddedImagesIfNeeded(migrated);
+    migratedImageCount=result.count;
+    return result.state;
+  }catch(e){
+    // Keep the still-embedded legacy images in memory and in IndexedDB.
+    // We never replace the user data with an empty state just because migration failed.
+    console.error('Image separation migration is incomplete',e);
+    migrationWarning=true;
+    return migrated;
+  }
+}
+async function persistStateNow(){
+  // If a previous migration was interrupted, finish moving remaining embedded
+  // images BEFORE saving lightweight state. This prevents accidental image loss.
+  if((state.words||[]).some(w=>typeof w.image==='string' && w.image.startsWith('data:image/'))){
+    const result=await migrateEmbeddedImagesIfNeeded(state);
+    state=result.state;
+    migratedImageCount+=result.count;
+    migrationWarning=false;
+  }
+  const clean=stateForStorage();
+  const db=await openDb();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction(STORE_NAME,'readwrite');
+    tx.objectStore(STORE_NAME).put(clean,STATE_KEY);
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error);
+    tx.onabort=()=>reject(tx.error||new Error('State save aborted'));
+  });
+}
+function persistState(){
+  saveChain=saveChain.then(()=>persistStateNow()).catch(e=>{
+    console.error('IndexedDB state save failed',e);
+    toast('学習データの保存に失敗しました。ブラウザの空き容量をご確認ください。');
+  });
+  return saveChain;
 }
 function saveState(){ persistState(); renderAll(); }
+async function getImageBlob(wordId){
+  const db=await openDb();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(IMAGE_STORE,'readonly');
+    const req=tx.objectStore(IMAGE_STORE).get(wordId);
+    req.onsuccess=()=>{
+      const value=req.result;
+      if(typeof value==='string' && value.startsWith('data:image/')){
+        try{ resolve(dataUrlToBlob(value)); }catch{ resolve(null); }
+      } else resolve(value instanceof Blob ? value : null);
+    };
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function putImageBlob(wordId,blob){
+  if(!(blob instanceof Blob)) throw new Error('Image blob is required');
+  const db=await openDb();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction(IMAGE_STORE,'readwrite');
+    tx.objectStore(IMAGE_STORE).put(blob,wordId);
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error);
+    tx.onabort=()=>reject(tx.error||new Error('Image save aborted'));
+  });
+  invalidateImageUrl(wordId);
+}
+async function deleteImageBlob(wordId){
+  const db=await openDb();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction(IMAGE_STORE,'readwrite');
+    tx.objectStore(IMAGE_STORE).delete(wordId);
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error);
+  });
+  invalidateImageUrl(wordId);
+}
+function invalidateImageUrl(wordId){
+  const old=imageUrlCache.get(wordId);
+  if(old){ URL.revokeObjectURL(old); imageUrlCache.delete(wordId); }
+}
+async function getImageUrl(wordId){
+  if(imageUrlCache.has(wordId)) return imageUrlCache.get(wordId);
+  const blob=await getImageBlob(wordId);
+  if(!blob) return null;
+  const url=URL.createObjectURL(blob);
+  imageUrlCache.set(wordId,url);
+  return url;
+}
+async function showStoredImage(w,imgId,wrapId){
+  const img=$(imgId), wrap=$(wrapId);
+  if(!img || !wrap) return;
+  const token=`${w?.id||'none'}-${Math.random()}`;
+  img.dataset.imageToken=token;
+  wrap.classList.add('hidden');
+  img.removeAttribute('src');
+  if(typeof w?.image==='string' && w.image.startsWith('data:image/')){
+    img.src=w.image; wrap.classList.remove('hidden'); return;
+  }
+  if(!w?.hasImage) return;
+  try{
+    const url=await getImageUrl(w.id);
+    if(img.dataset.imageToken!==token) return;
+    if(url){ img.src=url; wrap.classList.remove('hidden'); }
+  }catch(err){ console.warn('Image load failed',err); }
+}
+async function clearAllImages(){
+  const db=await openDb();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction(IMAGE_STORE,'readwrite');
+    tx.objectStore(IMAGE_STORE).clear();
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error);
+  });
+  for(const url of imageUrlCache.values()) URL.revokeObjectURL(url);
+  imageUrlCache.clear();
+}
+async function replaceStateAndImages(newState,imageEntries){
+  const clean=stateForStorage(newState);
+  const db=await openDb();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction([STORE_NAME,IMAGE_STORE],'readwrite');
+    const images=tx.objectStore(IMAGE_STORE);
+    images.clear();
+    for(const [id,blob] of imageEntries) images.put(blob,id);
+    tx.objectStore(STORE_NAME).put(clean,STATE_KEY);
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error);
+    tx.onabort=()=>reject(tx.error||new Error('Restore aborted'));
+  });
+  for(const url of imageUrlCache.values()) URL.revokeObjectURL(url);
+  imageUrlCache.clear();
+}
 function newWordTemplate(){
   const now = Date.now();
-  return {id:crypto.randomUUID ? crypto.randomUUID() : String(now)+Math.random(),word:'',pos:'',core:'',image:null,sentenceJa:'',sentenceEn:'',alternatives:[],choices:[],correctChoice:0,connectExplanation:'',createdAt:now,updatedAt:now,stats:{level:0,nextDueAt:now,recall:{attempts:0,correct:0,streak:0,wrongStreak:0,totalMs:0,lastCorrectAt:null,lastWrongAt:null},use:{attempts:0,correct:0,almost:0},connect:{attempts:0,correct:0}}};
+  return {id:crypto.randomUUID ? crypto.randomUUID() : String(now)+Math.random(),word:'',pos:'',core:'',hasImage:false,sentenceJa:'',sentenceEn:'',alternatives:[],choices:[],correctChoice:0,connectExplanation:'',createdAt:now,updatedAt:now,stats:{level:0,nextDueAt:now,recall:{attempts:0,correct:0,streak:0,wrongStreak:0,totalMs:0,lastCorrectAt:null,lastWrongAt:null},use:{attempts:0,correct:0,almost:0},connect:{attempts:0,correct:0}}};
 }
 function normalizeWord(s){ return (s||'').trim().toLowerCase().replace(/[’]/g,"'"); }
 function normalizeSentence(s){ return (s||'').trim().toLowerCase().replace(/[’]/g,"'").replace(/[.,!?;:\"“”]/g,'').replace(/\s+/g,' '); }
@@ -145,7 +383,7 @@ function showRecall(w){
   $('coreText').textContent=w.core;
   $('recallInput').value='';
   $('recallFeedback').className='feedback hidden';
-  if(w.image){ $('coreImage').src=w.image; $('coreImageWrap').classList.remove('hidden'); } else $('coreImageWrap').classList.add('hidden');
+  showStoredImage(w,'coreImage','coreImageWrap');
   if((w.pos||'').trim()){
     $('recallPos').textContent=w.pos.trim();
     $('recallPos').classList.remove('hidden');
@@ -198,7 +436,7 @@ function showFixation(w,wasCorrect,userInput=''){
   $('stageBadge').textContent=wasCorrect?'✅ 正解':'❌ 不正解';
   $('fixWord').textContent=w.word;
   $('fixCore').textContent=w.core;
-  if(w.image){$('fixImage').src=w.image;$('fixImageWrap').classList.remove('hidden')} else $('fixImageWrap').classList.add('hidden');
+  showStoredImage(w,'fixImage','fixImageWrap');
   $('replayAudio').onclick=()=>speakEnglish(w.word);
   speakEnglish(w.word);
   $('fixNext').textContent = wasCorrect ? ((session.mode==='recall')?'次の単語':'次へ') : '次の単語';
@@ -246,38 +484,149 @@ function answerConnect(w,i,button){
   const a=document.createElement('div');a.className='feedback-actions';const n=document.createElement('button');n.className='primary-btn';n.textContent='次の単語';n.onclick=()=>{f.dataset.answered='0';completeCurrent()};a.appendChild(n);f.appendChild(a);
 }
 
-function openWordDialog(id=null){
-  const w=id?getWord(id):newWordTemplate(); pendingImage=w.image||null; $('wordId').value=id||''; $('dialogTitle').textContent=id?'単語を編集':'単語を追加'; $('fieldWord').value=w.word; $('fieldPos').value=w.pos; $('fieldCore').value=w.core; $('fieldSentenceJa').value=w.sentenceJa; $('fieldSentenceEn').value=w.sentenceEn; $('fieldAlternatives').value=(w.alternatives||[]).join('\n'); $('fieldConnectExplanation').value=w.connectExplanation||''; renderConnectEditor(w.choices||[],w.correctChoice||0); updatePreview(); $('deleteWordBtn').classList.toggle('hidden',!id); $('wordDialog').showModal();
+async function openWordDialog(id=null){
+  const w=id?getWord(id):newWordTemplate();
+  cleanupPendingPreview();
+  pendingImageMode=id?'unchanged':'remove';
+  pendingImageBlob=null;
+  $('wordId').value=id||'';
+  $('fieldImage').value='';
+  $('dialogTitle').textContent=id?'単語を編集':'単語を追加';
+  $('fieldWord').value=w.word;
+  $('fieldPos').value=w.pos;
+  $('fieldCore').value=w.core;
+  $('fieldSentenceJa').value=w.sentenceJa;
+  $('fieldSentenceEn').value=w.sentenceEn;
+  $('fieldAlternatives').value=(w.alternatives||[]).join('\n');
+  $('fieldConnectExplanation').value=w.connectExplanation||'';
+  renderConnectEditor(w.choices||[],w.correctChoice||0);
+  $('deleteWordBtn').classList.toggle('hidden',!id);
+  hideImagePreview();
+  $('wordDialog').showModal();
+  if(id && typeof w.image==='string' && w.image.startsWith('data:image/')){
+    showImagePreview(w.image);
+  }else if(id && w.hasImage){
+    try{
+      const url=await getImageUrl(w.id);
+      if($('wordId').value===id && pendingImageMode==='unchanged' && url) showImagePreview(url);
+    }catch(err){ console.warn('Preview image load failed',err); }
+  }
 }
-$('addWordBtn').onclick=()=>openWordDialog(); $('closeDialog').onclick=()=>$('wordDialog').close(); $('cancelWord').onclick=()=>$('wordDialog').close();
-$('fieldImage').addEventListener('change',async e=>{ const file=e.target.files?.[0]; if(!file)return; try{ pendingImage=await compressImage(file); updatePreview(); }catch(err){ console.error(err); toast('画像を読み込めませんでした'); } });
+$('addWordBtn').onclick=()=>openWordDialog();
+$('closeDialog').onclick=()=>{cleanupPendingPreview();$('wordDialog').close();};
+$('cancelWord').onclick=()=>{cleanupPendingPreview();$('wordDialog').close();};
+$('fieldImage').addEventListener('change',async e=>{
+  const file=e.target.files?.[0];
+  if(!file)return;
+  try{
+    const blob=await compressImage(file);
+    cleanupPendingPreview();
+    pendingImageBlob=blob;
+    pendingImageMode='replace';
+    pendingPreviewUrl=URL.createObjectURL(blob);
+    showImagePreview(pendingPreviewUrl);
+  }catch(err){ console.error(err); toast('画像を読み込めませんでした'); }
+});
 function compressImage(file){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
     reader.onerror=reject;
     reader.onload=()=>{
-      const img=new Image(); img.onerror=reject;
+      const img=new Image();
+      img.onerror=reject;
       img.onload=()=>{
         const max=1200, scale=Math.min(1,max/Math.max(img.width,img.height));
-        const canvas=document.createElement('canvas'); canvas.width=Math.max(1,Math.round(img.width*scale)); canvas.height=Math.max(1,Math.round(img.height*scale));
-        const ctx=canvas.getContext('2d'); ctx.drawImage(img,0,0,canvas.width,canvas.height);
-        try{ resolve(canvas.toDataURL('image/jpeg',0.82)); }catch{ resolve(reader.result); }
+        const canvas=document.createElement('canvas');
+        canvas.width=Math.max(1,Math.round(img.width*scale));
+        canvas.height=Math.max(1,Math.round(img.height*scale));
+        const ctx=canvas.getContext('2d');
+        // White background keeps transparent PNGs predictable after JPEG conversion.
+        ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        canvas.toBlob(blob=>blob?resolve(blob):reject(new Error('画像圧縮に失敗しました')),'image/jpeg',0.82);
       };
       img.src=reader.result;
     };
     reader.readAsDataURL(file);
   });
 }
-$('removeImage').onclick=()=>{pendingImage=null;$('fieldImage').value='';updatePreview()};
-function updatePreview(){ if(pendingImage){$('imagePreview').src=pendingImage;$('imagePreview').classList.remove('hidden');$('removeImage').classList.remove('hidden')}else{$('imagePreview').classList.add('hidden');$('removeImage').classList.add('hidden')}}
+function cleanupPendingPreview(){
+  if(pendingPreviewUrl){ URL.revokeObjectURL(pendingPreviewUrl); pendingPreviewUrl=null; }
+}
+function hideImagePreview(){
+  $('imagePreview').removeAttribute('src');
+  $('imagePreview').classList.add('hidden');
+  $('removeImage').classList.add('hidden');
+}
+function showImagePreview(src){
+  $('imagePreview').src=src;
+  $('imagePreview').classList.remove('hidden');
+  $('removeImage').classList.remove('hidden');
+}
+$('removeImage').onclick=()=>{
+  cleanupPendingPreview();
+  pendingImageBlob=null;
+  pendingImageMode='remove';
+  $('fieldImage').value='';
+  hideImagePreview();
+};
 function renderConnectEditor(choices=[],correct=0){ const ed=$('connectEditor'); ed.innerHTML=''; const arr=choices.length?choices:['','']; arr.slice(0,6).forEach((c,i)=>addChoiceRow(c,i===correct)); }
 function addChoiceRow(value='',checked=false){ const ed=$('connectEditor'); if(ed.children.length>=6){toast('選択肢は最大6個です');return;} const row=document.createElement('div'); row.className='connect-choice-row'; row.innerHTML=`<input type="radio" name="correctChoice" ${checked?'checked':''} aria-label="正解"><input type="text" class="choiceText" value="${escapeHtml(value)}" placeholder="選択肢"><button type="button" class="icon-btn">×</button>`; row.querySelector('.icon-btn').onclick=()=>row.remove(); ed.appendChild(row); }
 $('addChoice').onclick=()=>addChoiceRow();
-$('wordForm').addEventListener('submit',e=>{
-  e.preventDefault(); const id=$('wordId').value; let w=id?getWord(id):newWordTemplate(); w.word=$('fieldWord').value.trim(); w.pos=$('fieldPos').value.trim(); w.core=$('fieldCore').value.trim(); if(!w.word||!w.core){toast('英単語とコアイメージは必須です');return;} w.image=pendingImage; w.sentenceJa=$('fieldSentenceJa').value.trim(); w.sentenceEn=$('fieldSentenceEn').value.trim(); w.alternatives=$('fieldAlternatives').value.split('\n').map(x=>x.trim()).filter(Boolean); w.connectExplanation=$('fieldConnectExplanation').value.trim();
-  const rows=[...$('connectEditor').children]; w.choices=rows.map(r=>r.querySelector('.choiceText').value.trim()).filter(Boolean); const checkedRow=rows.find(r=>r.querySelector('input[type=radio]').checked); const checkedValue=checkedRow?.querySelector('.choiceText').value.trim(); w.correctChoice=Math.max(0,w.choices.indexOf(checkedValue)); w.updatedAt=Date.now(); if(!id)state.words.push(w); saveState(); $('wordDialog').close(); toast(id?'更新しました':'登録しました');
+$('wordForm').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const id=$('wordId').value;
+  const isNew=!id;
+  let w=id?getWord(id):newWordTemplate();
+  w.word=$('fieldWord').value.trim();
+  w.pos=$('fieldPos').value.trim();
+  w.core=$('fieldCore').value.trim();
+  if(!w.word||!w.core){toast('英単語とコアイメージは必須です');return;}
+  w.sentenceJa=$('fieldSentenceJa').value.trim();
+  w.sentenceEn=$('fieldSentenceEn').value.trim();
+  w.alternatives=$('fieldAlternatives').value.split('\n').map(x=>x.trim()).filter(Boolean);
+  w.connectExplanation=$('fieldConnectExplanation').value.trim();
+  const rows=[...$('connectEditor').children];
+  w.choices=rows.map(r=>r.querySelector('.choiceText').value.trim()).filter(Boolean);
+  const checkedRow=rows.find(r=>r.querySelector('input[type=radio]').checked);
+  const checkedValue=checkedRow?.querySelector('.choiceText').value.trim();
+  w.correctChoice=Math.max(0,w.choices.indexOf(checkedValue));
+  w.updatedAt=Date.now();
+
+  try{
+    if(pendingImageMode==='replace' && pendingImageBlob){
+      await putImageBlob(w.id,pendingImageBlob);
+      w.hasImage=true;
+    }else if(pendingImageMode==='remove'){
+      if(!isNew) await deleteImageBlob(w.id);
+      w.hasImage=false;
+    }
+    if(isNew) state.words.push(w);
+    await persistStateNow();
+    renderAll();
+    cleanupPendingPreview();
+    $('wordDialog').close();
+    toast(id?'更新しました':'登録しました');
+  }catch(err){
+    console.error('Word save failed',err);
+    toast('保存に失敗しました。画像またはブラウザ容量をご確認ください。');
+  }
 });
-$('deleteWordBtn').onclick=()=>{ const id=$('wordId').value;if(!id)return;if(confirm('この単語を削除しますか？')){state.words=state.words.filter(w=>w.id!==id);saveState();$('wordDialog').close();toast('削除しました')}};
+$('deleteWordBtn').onclick=async()=>{
+  const id=$('wordId').value;
+  if(!id)return;
+  if(confirm('この単語を削除しますか？')){
+    try{
+      await deleteImageBlob(id);
+      state.words=state.words.filter(w=>w.id!==id);
+      await persistStateNow();
+      renderAll();
+      cleanupPendingPreview();
+      $('wordDialog').close();
+      toast('削除しました');
+    }catch(err){ console.error(err); toast('削除に失敗しました'); }
+  }
+};
 
 
 function normalizeImportPack(data){
@@ -286,7 +635,7 @@ function normalizeImportPack(data){
     word:String(raw.word||'').trim(),
     pos:String(raw.pos||'').trim(),
     core:String(raw.core||'').trim(),
-    image:(typeof raw.image==='string' && raw.image.startsWith('data:image/')) ? raw.image : null,
+    imageData:(typeof raw.image==='string' && raw.image.startsWith('data:image/')) ? raw.image : null,
     sentenceJa:String(raw.sentenceJa||'').trim(),
     sentenceEn:String(raw.sentenceEn||'').trim(),
     alternatives:Array.isArray(raw.alternatives)?raw.alternatives.map(x=>String(x).trim()).filter(Boolean):[],
@@ -319,7 +668,7 @@ $('bulkImportInput').addEventListener('change',e=>{
       const words=normalizeImportPack(data);
       if(!words.length) throw new Error('登録できる単語がありません');
       pendingBulkData={...data,words};
-      const withImages=words.filter(w=>w.image).length;
+      const withImages=words.filter(w=>w.imageData).length;
       const withUse=words.filter(w=>w.sentenceJa && w.sentenceEn).length;
       const withConnect=words.filter(w=>w.choices.length>=2 && w.choices[w.correctChoice]).length;
       $('bulkImportPreview').innerHTML=`<strong>${words.length}語を読み込みました</strong><div class="bulk-counts"><span>🖼️ 画像 ${withImages}</span><span>2️⃣ USE ${withUse}</span><span>3️⃣ CONNECT ${withConnect}</span></div><div class="bulk-preview-list">${words.map(w=>escapeHtml(w.word)+(w.pos?` <small>(${escapeHtml(w.pos)})</small>`:'')).join(' / ')}</div>`;
@@ -338,28 +687,109 @@ $('bulkImportInput').addEventListener('change',e=>{
   };
   reader.readAsText(file);
 });
-$('runBulkImport').onclick=()=>{
+$('runBulkImport').onclick=async()=>{
   if(!pendingBulkData)return;
   const mode=document.querySelector('input[name="duplicateMode"]:checked')?.value||'update';
   let added=0,updated=0,skipped=0;
-  for(const raw of pendingBulkData.words){
-    const existing=state.words.find(w=>normalizeWord(w.word)===normalizeWord(raw.word));
-    if(existing && mode==='skip'){ skipped++; continue; }
-    const w=existing||newWordTemplate();
-    w.word=raw.word; w.pos=raw.pos; w.core=raw.core; w.image=raw.image;
-    w.sentenceJa=raw.sentenceJa; w.sentenceEn=raw.sentenceEn; w.alternatives=raw.alternatives;
-    w.choices=raw.choices; w.correctChoice=Math.min(Math.max(0,raw.correctChoice),Math.max(0,raw.choices.length-1));
-    w.connectExplanation=raw.connectExplanation; w.updatedAt=Date.now();
-    if(existing) updated++; else { state.words.push(w); added++; }
+  $('runBulkImport').disabled=true;
+  try{
+    for(const raw of pendingBulkData.words){
+      const existing=state.words.find(w=>normalizeWord(w.word)===normalizeWord(raw.word));
+      if(existing && mode==='skip'){ skipped++; continue; }
+      const w=existing||newWordTemplate();
+      w.word=raw.word; w.pos=raw.pos; w.core=raw.core;
+      w.sentenceJa=raw.sentenceJa; w.sentenceEn=raw.sentenceEn; w.alternatives=raw.alternatives;
+      w.choices=raw.choices; w.correctChoice=Math.min(Math.max(0,raw.correctChoice),Math.max(0,raw.choices.length-1));
+      w.connectExplanation=raw.connectExplanation; w.updatedAt=Date.now();
+      // Image-less update packs preserve an image that the user already registered.
+      if(raw.imageData){
+        await putImageBlob(w.id,dataUrlToBlob(raw.imageData));
+        w.hasImage=true;
+      }
+      if(existing) updated++; else { state.words.push(w); added++; }
+    }
+    await persistStateNow();
+    renderAll();
+    const msg=`一括登録：追加 ${added}語 / 更新 ${updated}語${skipped?` / スキップ ${skipped}語`:''}`;
+    resetBulkImportUi(); toast(msg);
+  }catch(err){
+    console.error('Bulk import failed',err);
+    $('runBulkImport').disabled=false;
+    toast('一括登録に失敗しました。ファイルまたは保存容量をご確認ください。');
   }
-  saveState();
-  const msg=`一括登録：追加 ${added}語 / 更新 ${updated}語${skipped?` / スキップ ${skipped}語`:''}`;
-  resetBulkImportUi(); toast(msg);
 };
 
-$('exportBtn').onclick=()=>{ const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`word-recall-backup-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href); };
-$('importInput').addEventListener('change',e=>{ const file=e.target.files?.[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{ try{ const data=JSON.parse(reader.result); if(!Array.isArray(data.words))throw new Error(); if(confirm('現在のデータをバックアップ内容で置き換えますか？')){state=migrate(data);saveState();toast('復元しました')}}catch{alert('有効なバックアップファイルではありません')} e.target.value='';}; reader.readAsText(file); });
-$('resetBtn').onclick=()=>{ if(confirm('本当に全データを削除しますか？この操作は元に戻せません。')){state=defaultState();persistState();renderAll();toast('全データを削除しました')}};
+$('exportBtn').onclick=async()=>{
+  const btn=$('exportBtn');
+  const old=btn.textContent;
+  btn.disabled=true; btn.textContent='書き出し中…';
+  try{
+    const backup=stateForStorage();
+    for(const w of backup.words){
+      const source=getWord(w.id);
+      if(typeof source?.image==='string' && source.image.startsWith('data:image/')){
+        w.image=source.image;
+        w.hasImage=true;
+        continue;
+      }
+      if(!w.hasImage) continue;
+      const blob=await getImageBlob(w.id);
+      if(blob) w.image=await blobToDataUrl(blob);
+    }
+    const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`word-recall-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(err){ console.error(err); toast('バックアップの作成に失敗しました'); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+};
+$('importInput').addEventListener('change',e=>{
+  const file=e.target.files?.[0]; if(!file)return;
+  const reader=new FileReader();
+  reader.onload=async()=>{
+    try{
+      const data=JSON.parse(reader.result);
+      if(!Array.isArray(data.words))throw new Error();
+      if(!confirm('現在のデータをバックアップ内容で置き換えますか？')){ e.target.value=''; return; }
+      const restored=migrate(data);
+      const entries=[];
+      for(const w of restored.words){
+        if(typeof w.image==='string' && w.image.startsWith('data:image/')){
+          entries.push([w.id,dataUrlToBlob(w.image)]);
+          w.hasImage=true;
+        }else{
+          // A portable backup should carry its images. If none is embedded, treat it as image-less.
+          w.hasImage=false;
+        }
+        delete w.image;
+      }
+      await replaceStateAndImages(restored,entries);
+      state=stateForStorage(restored);
+      renderAll();
+      toast(`復元しました（画像 ${entries.length}枚）`);
+    }catch(err){ console.error(err); alert('有効なバックアップファイルではありません'); }
+    e.target.value='';
+  };
+  reader.readAsText(file);
+});
+$('resetBtn').onclick=async()=>{
+  if(!confirm('本当に全データを削除しますか？この操作は元に戻せません。')) return;
+  try{
+    const empty=defaultState();
+    await replaceStateAndImages(empty,[]);
+    state=empty;
+    renderAll();
+    toast('全データを削除しました');
+  }catch(err){ console.error(err); toast('全データ削除に失敗しました'); }
+};
 
-async function init(){ state=await loadState(); renderAll(); }
+
+async function init(){
+  state=await loadState();
+  renderAll();
+  if(migrationWarning) setTimeout(()=>toast('画像移行が途中です。データは保持されています。空き容量を確保して再読み込みしてください。'),250);
+  else if(migratedImageCount>0) setTimeout(()=>toast(`既存画像 ${migratedImageCount}枚を安全に分離保存しました`),250);
+}
 init();
