@@ -436,6 +436,13 @@ function showFixation(w,wasCorrect,userInput=''){
   $('stageBadge').textContent=wasCorrect?'✅ 正解':'❌ 不正解';
   $('fixWord').textContent=w.word;
   $('fixCore').textContent=w.core;
+  if((w.sentenceEn||'').trim()){
+    $('fixSentence').textContent=w.sentenceEn.trim();
+    $('fixSentenceWrap').classList.remove('hidden');
+  } else {
+    $('fixSentence').textContent='';
+    $('fixSentenceWrap').classList.add('hidden');
+  }
   showStoredImage(w,'fixImage','fixImageWrap');
   $('replayAudio').onclick=()=>speakEnglish(w.word);
   speakEnglish(w.word);

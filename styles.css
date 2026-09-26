@@ -13,4 +13,7 @@
 .dont-know-btn:hover{background:#f9fafb;border-color:#98a2b3}
 .audio-replay-btn{display:block;margin:8px auto 14px;border:1px solid var(--line);border-radius:999px;padding:8px 13px;background:#fff;color:#344054;font-size:13px;font-weight:800;cursor:pointer}
 .audio-replay-btn:hover{background:#f9fafb}
-
+/* Recall answer: model sentence */
+.fix-sentence-wrap{max-width:720px;margin:0 auto 24px;padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:#f8fafc;text-align:left}
+.fix-sentence-label{margin-bottom:7px;color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.04em}
+.fix-sentence{color:var(--text);font-size:clamp(18px,2.6vw,23px);font-weight:750;line-height:1.55}
