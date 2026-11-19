@@ -17,3 +17,12 @@
 .fix-sentence-wrap{max-width:720px;margin:0 auto 24px;padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:#f8fafc;text-align:left}
 .fix-sentence-label{margin-bottom:7px;color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.04em}
 .fix-sentence{color:var(--text);font-size:clamp(18px,2.6vw,23px);font-weight:750;line-height:1.55}
+
+/* v0.7 Sentence Recall */
+.sentence-mode-grid{grid-template-columns:minmax(0,1fr)}
+.sentence-mode-card{max-width:760px;width:100%}
+.cloze-ja{margin:14px 0 10px;text-align:center}
+.cloze-sentence{font-size:clamp(23px,4vw,34px);line-height:1.55;font-weight:850;text-align:center;margin:16px auto 20px;max-width:760px;padding:18px 16px;border:1px solid var(--line);border-radius:16px;background:#f8fafc;white-space:pre-wrap}
+#clozeStage .core-image-wrap{margin-top:14px}
+#clozeStage form{max-width:720px;margin-left:auto;margin-right:auto}
+@media(max-width:780px){.cloze-sentence{font-size:24px;padding:15px 12px}.cloze-ja{font-size:21px}.sentence-mode-card{max-width:none}}

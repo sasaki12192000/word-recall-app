@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#111827" />
   <title>Word Recall</title>
-  <link rel="stylesheet" href="styles.css?v=0.6.1" />
+  <link rel="stylesheet" href="styles.css?v=0.7.0" />
 </head>
 <body>
   <header class="app-header">
@@ -24,9 +24,9 @@
     <section id="view-home" class="view active">
       <div class="hero card">
         <div>
-          <span class="pill">1️⃣ Recall が中心</span>
-          <h2>意味と絵から、英単語を思い出す。</h2>
-          <p>忘れそうな単語を優先し、正解するほど復習間隔を伸ばします。</p>
+          <span class="pill">Sentence Recall</span>
+          <h2>文脈の中で、使う英語を思い出す。</h2>
+          <p>日本語例文・穴埋め英文・絵を手がかりに、空欄へ入る英語をタイピングします。</p>
         </div>
         <div class="hero-stats">
           <div><strong id="homeTotal">0</strong><span>登録単語</span></div>
@@ -35,24 +35,12 @@
         </div>
       </div>
       <h3 class="section-title">学習モード</h3>
-      <div class="mode-grid">
-        <button class="mode-card" data-mode="recall">
-          <div class="mode-icon">⚡</div>
-          <h3>単語集中</h3>
-          <p><b>1️⃣ Recall</b></p>
-          <small>時間がない日に高速で回す</small>
-        </button>
-        <button class="mode-card" data-mode="recall-use">
-          <div class="mode-icon">🔹</div>
-          <h3>標準学習</h3>
-          <p><b>1️⃣ Recall + 2️⃣ Use</b></p>
-          <small>単語を思い出し、英文で使う</small>
-        </button>
-        <button class="mode-card" data-mode="full">
-          <div class="mode-icon">🔥</div>
-          <h3>深掘り学習</h3>
-          <p><b>1️⃣ + 2️⃣ + 3️⃣</b></p>
-          <small>類義語との意味ネットワークまで作る</small>
+      <div class="mode-grid sentence-mode-grid">
+        <button class="mode-card sentence-mode-card" data-mode="cloze">
+          <div class="mode-icon">⌨️</div>
+          <h3>文脈タイピング</h3>
+          <p><b>日本語 + 穴埋め英文 + 絵</b></p>
+          <small>空欄に入る英語を思い出して入力する</small>
         </button>
       </div>
       <div class="study-options card compact">
@@ -79,6 +67,18 @@
       <div class="progress-track"><div id="progressBar"></div></div>
       <div id="studyCard" class="study-card card">
         <div id="stageBadge" class="stage-badge"></div>
+        <div id="clozeStage" class="stage hidden">
+          <p class="prompt-label">日本語と絵を見て、空欄に入る英語は？</p>
+          <div id="clozeJa" class="sentence-ja cloze-ja"></div>
+          <div id="clozeSentence" class="cloze-sentence"></div>
+          <div id="clozeImageWrap" class="core-image-wrap hidden"><img id="clozeImage" alt="英文の場面イメージ" /></div>
+          <form id="clozeForm" autocomplete="off">
+            <input id="clozeInput" class="answer-input" type="text" placeholder="空欄に入る英語を入力" autocapitalize="none" spellcheck="false" />
+            <button class="primary-btn" type="submit">判定</button>
+            <button id="clozeDontKnowBtn" class="dont-know-btn" type="button">わからない</button>
+          </form>
+          <div id="clozeFeedback" class="feedback hidden"></div>
+        </div>
         <div id="recallStage" class="stage hidden">
           <p class="prompt-label">このコアイメージに合う英単語は？</p>
           <div id="coreImageWrap" class="core-image-wrap hidden"><img id="coreImage" alt="コアイメージ" /></div>
@@ -143,7 +143,7 @@
         <div class="bulk-inline-head">
           <div>
             <h3>一括登録ファイル</h3>
-            <p>英単語・品詞・コアイメージ・画像に加え、2️⃣ USE と 3️⃣ CONNECT のデータもまとめて登録できます。</p>
+            <p>英単語・例文・穴埋め英文・正解などをまとめて登録できます。画像なし更新なら既存画像はそのまま残ります。</p>
           </div>
           <button type="button" id="closeBulkImport" class="icon-btn" aria-label="閉じる">×</button>
         </div>
@@ -163,12 +163,12 @@
       <div id="wordEmpty" class="empty-state hidden">登録単語はまだありません。</div>
     </section>
     <section id="view-stats" class="view">
-      <div class="section-head"><div><h2>成績</h2><p>1️⃣ Recall を中心に、各ステップの成績を別々に記録します。</p></div></div>
+      <div class="section-head"><div><h2>成績</h2><p>Sentence Recall の成績と復習スケジュールを記録します。</p></div></div>
       <div id="statsSummary" class="summary-grid"></div>
       <div class="card table-card">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>単語</th><th>Level</th><th>Recall</th><th>平均回答</th><th>Use</th><th>Connect</th><th>次回</th></tr></thead>
+            <thead><tr><th>単語</th><th>Level</th><th>Sentence</th><th>平均回答</th><th>Use</th><th>Connect</th><th>次回</th></tr></thead>
             <tbody id="statsTable"></tbody>
           </table>
         </div>
@@ -193,9 +193,13 @@
         <label class="wide">日本語のコアイメージ <span>*</span><textarea id="fieldCore" required rows="4" placeholder="単なる和訳ではなく、意味の芯を日本語で説明"></textarea></label>
         <label class="wide">コアイメージ画像<input id="fieldImage" type="file" accept="image/*" /></label>
         <div class="wide image-editor"><img id="imagePreview" class="hidden" alt="プレビュー" /><button type="button" id="removeImage" class="ghost-btn hidden">画像を削除</button></div>
-        <div class="form-section wide"><h3>2️⃣ USE</h3><p>標準学習・深掘り学習で使用します。未入力ならそのステップを自動でスキップします。</p></div>
-        <label class="wide">日本語例文<textarea id="fieldSentenceJa" rows="2" placeholder="例: 私は明日の会議が不安です。"></textarea></label>
-        <label class="wide">模範英文<textarea id="fieldSentenceEn" rows="2" placeholder="例: I'm anxious about tomorrow's meeting."></textarea></label>
+        <div class="form-section wide"><h3>Sentence Recall</h3><p>日本語例文と画像を見ながら、英文の空欄部分をタイピングします。</p></div>
+        <label class="wide">日本語例文<textarea id="fieldSentenceJa" rows="2" placeholder="例: 私はその仕事に応募しました。"></textarea></label>
+        <label class="wide">模範英文<textarea id="fieldSentenceEn" rows="2" placeholder="例: I applied for the job."></textarea></label>
+        <label class="wide">穴埋め英文<textarea id="fieldClozeSentence" rows="2" placeholder="例: I ______ the job."></textarea></label>
+        <label class="wide">空欄の正解<input id="fieldClozeAnswer" placeholder="例: applied for" /></label>
+        <div class="form-section wide"><h3>旧 USE / CONNECT データ</h3><p>旧データとの互換性のため保持します。新しい文脈タイピングでは使用しません。</p></div>
+
         <label class="wide">別解（1行に1つ）<textarea id="fieldAlternatives" rows="3" placeholder="自然な別解があれば入力"></textarea></label>
         <div class="form-section wide"><h3>3️⃣ CONNECT</h3><p>選択肢は2〜6個。正解を1つ選びます。</p></div>
         <div id="connectEditor" class="wide connect-editor"></div>
@@ -206,7 +210,7 @@
     </form>
   </dialog>
   <div id="toast" class="toast hidden"></div>
-  <script src="app.js?v=0.6.1"></script>
-  <script src="ui-v0.6.js?v=0.6"></script>
+  <script src="app.js?v=0.7.0"></script>
+  <script src="ui-v0.6.js?v=0.7.0"></script>
 </body>
 </html>

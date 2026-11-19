@@ -282,7 +282,7 @@ async function replaceStateAndImages(newState,imageEntries){
 }
 function newWordTemplate(){
   const now = Date.now();
-  return {id:crypto.randomUUID ? crypto.randomUUID() : String(now)+Math.random(),word:'',pos:'',core:'',hasImage:false,sentenceJa:'',sentenceEn:'',alternatives:[],choices:[],correctChoice:0,connectExplanation:'',createdAt:now,updatedAt:now,stats:{level:0,nextDueAt:now,recall:{attempts:0,correct:0,streak:0,wrongStreak:0,totalMs:0,lastCorrectAt:null,lastWrongAt:null},use:{attempts:0,correct:0,almost:0},connect:{attempts:0,correct:0}}};
+  return {id:crypto.randomUUID ? crypto.randomUUID() : String(now)+Math.random(),word:'',pos:'',core:'',hasImage:false,sentenceJa:'',sentenceEn:'',clozeSentence:'',clozeAnswer:'',alternatives:[],choices:[],correctChoice:0,connectExplanation:'',createdAt:now,updatedAt:now,stats:{level:0,nextDueAt:now,recall:{attempts:0,correct:0,streak:0,wrongStreak:0,totalMs:0,lastCorrectAt:null,lastWrongAt:null},use:{attempts:0,correct:0,almost:0},connect:{attempts:0,correct:0}}};
 }
 function normalizeWord(s){ return (s||'').trim().toLowerCase().replace(/[’]/g,"'"); }
 function normalizeSentence(s){ return (s||'').trim().toLowerCase().replace(/[’]/g,"'").replace(/[.,!?;:\"“”]/g,'').replace(/\s+/g,' '); }
@@ -320,13 +320,13 @@ function renderWords(){
   const list=$('wordList'); list.innerHTML=''; $('wordEmpty').classList.toggle('hidden',state.words.length>0);
   [...state.words].sort((a,b)=>a.word.localeCompare(b.word)).forEach(w=>{
     const el=document.createElement('div'); el.className='word-row';
-    el.innerHTML=`<div class="word-main"><strong>${escapeHtml(w.word)}</strong><small>${escapeHtml(w.pos||'')}</small></div><div class="word-core">${escapeHtml(w.core)}</div><div class="word-meta">Lv.${w.stats.level}<br>Recall ${pct(w.stats.recall.correct,w.stats.recall.attempts)}%<br>${fmtDue(w.stats.nextDueAt)}</div>`;
+    el.innerHTML=`<div class="word-main"><strong>${escapeHtml(w.word)}</strong><small>${escapeHtml(w.pos||'')}</small></div><div class="word-core">${escapeHtml(w.core)}</div><div class="word-meta">Lv.${w.stats.level}<br>Sentence ${pct(w.stats.recall.correct,w.stats.recall.attempts)}%<br>${fmtDue(w.stats.nextDueAt)}</div>`;
     el.onclick=()=>openWordDialog(w.id); list.appendChild(el);
   });
 }
 function renderStats(){
   const total=state.words.length, attempts=state.words.reduce((s,w)=>s+w.stats.recall.attempts,0), correct=state.words.reduce((s,w)=>s+w.stats.recall.correct,0), due=state.words.filter(w=>(w.stats.nextDueAt||0)<=Date.now()).length, mastered=state.words.filter(w=>w.stats.level>=5).length;
-  $('statsSummary').innerHTML=[['登録単語',total],['Recall 正解率',`${pct(correct,attempts)}%`],['今日の復習',due],['Level 5+',mastered]].map(([l,v])=>`<div class="summary-card"><strong>${v}</strong><span>${l}</span></div>`).join('');
+  $('statsSummary').innerHTML=[['登録単語',total],['Sentence 正解率',`${pct(correct,attempts)}%`],['今日の復習',due],['Level 5+',mastered]].map(([l,v])=>`<div class="summary-card"><strong>${v}</strong><span>${l}</span></div>`).join('');
   $('statsTable').innerHTML=[...state.words].sort((a,b)=>(a.stats.nextDueAt||0)-(b.stats.nextDueAt||0)).map(w=>{
     const r=w.stats.recall,u=w.stats.use,c=w.stats.connect, avg=r.attempts ? (r.totalMs/r.attempts/1000).toFixed(1)+'秒':'—';
     return `<tr><td><b>${escapeHtml(w.word)}</b></td><td>${w.stats.level}</td><td>${pct(r.correct,r.attempts)}% (${r.correct}/${r.attempts})</td><td>${avg}</td><td>${pct(u.correct,u.attempts)}%</td><td>${pct(c.correct,c.attempts)}%</td><td>${fmtDue(w.stats.nextDueAt)}</td></tr>`;
@@ -352,12 +352,12 @@ function weightedOrder(words){
 function startStudy(mode){
   if(!state.words.length){ toast('先に単語を登録してください'); showView('words'); return; }
   const now=Date.now(), includeEarly=$('includeEarly').checked;
-  let candidates=state.words.filter(w=>includeEarly || (w.stats.nextDueAt||0)<=now);
+  let candidates=state.words.filter(w=>(mode!=='cloze' || (w.sentenceJa && w.sentenceEn)) && (includeEarly || (w.stats.nextDueAt||0)<=now));
   if(!candidates.length){ toast('今日の復習対象はありません。「復習日前も追加練習」をONにできます。'); return; }
   candidates=weightedOrder(candidates);
   const size=$('sessionSize').value; if(size!=='all') candidates=candidates.slice(0,Number(size));
   session={mode, queue:candidates.map(w=>w.id), index:0, initialCount:candidates.length, completed:0, currentId:null, recallStart:0, requeued:{}};
-  $('studyModeLabel').textContent= mode==='recall'?'⚡ 単語集中':mode==='recall-use'?'🔹 標準学習':'🔥 深掘り学習';
+  $('studyModeLabel').textContent= mode==='cloze'?'⌨️ 文脈タイピング':mode==='recall'?'⚡ 単語集中':mode==='recall-use'?'🔹 標準学習':'🔥 深掘り学習';
   showView('study'); nextWord();
 }
 $$('.mode-card').forEach(b=>b.addEventListener('click',()=>startStudy(b.dataset.mode)));
@@ -370,12 +370,55 @@ function updateStudyProgress(){
 function nextWord(){
   if(!session)return;
   if(session.index>=session.queue.length){ finishSession(); return; }
-  session.currentId=session.queue[session.index++]; updateStudyProgress(); showRecall(getWord(session.currentId));
+  session.currentId=session.queue[session.index++]; updateStudyProgress(); const w=getWord(session.currentId); if(session.mode==='cloze') showCloze(w); else showRecall(w);
 }
 function finishSession(){
   $('progressBar').style.width='100%'; $('studyCard').innerHTML=`<div style="text-align:center;padding:32px"><div style="font-size:48px">✅</div><h2>今日の学習完了</h2><p style="color:#667085">${session.completed}件の学習を終えました。</p><button id="backHomeAfter" class="primary-btn">学習画面へ戻る</button></div>`; $('backHomeAfter').onclick=()=>location.reload();
 }
-function hideStages(){ ['recallStage','fixationStage','useStage','connectStage'].forEach(id=>$(id).classList.add('hidden')); }
+function hideStages(){ ['clozeStage','recallStage','fixationStage','useStage','connectStage'].forEach(id=>$(id).classList.add('hidden')); }
+function getClozeData(w){
+  const manualSentence=(w.clozeSentence||'').trim();
+  const manualAnswer=(w.clozeAnswer||'').trim();
+  if(manualSentence && manualAnswer) return {sentence:manualSentence,answer:manualAnswer,manual:true};
+  const full=(w.sentenceEn||'').trim();
+  const target=(w.word||'').trim();
+  if(full && target){
+    const fullNorm=full.toLowerCase().replace(/[’]/g,"'");
+    const targetNorm=target.toLowerCase().replace(/[’]/g,"'");
+    const i=fullNorm.indexOf(targetNorm);
+    if(i>=0) return {sentence:full.slice(0,i)+'______'+full.slice(i+target.length),answer:full.slice(i,i+target.length),manual:false};
+  }
+  // Safety fallback for old cards that have not received the migration pack yet.
+  // After importing the v0.7 migration pack, all existing cards use explicit cloze data.
+  return {sentence:'______',answer:full||target,manual:false};
+}
+function showCloze(w){
+  hideStages();
+  $('clozeStage').classList.remove('hidden');
+  $('stageBadge').classList.add('hidden');
+  const c=getClozeData(w);
+  $('clozeJa').textContent=w.sentenceJa||w.core||'';
+  $('clozeSentence').textContent=c.sentence;
+  $('clozeInput').value='';
+  $('clozeFeedback').className='feedback hidden';
+  showStoredImage(w,'clozeImage','clozeImageWrap');
+  session.recallStart=performance.now();
+  setTimeout(()=>$('clozeInput').focus(),100);
+}
+$('clozeForm').addEventListener('submit',e=>{
+  e.preventDefault();
+  if(!session)return;
+  const w=getWord(session.currentId);
+  const input=$('clozeInput').value.trim();
+  if(!input)return;
+  const c=getClozeData(w);
+  gradeRecall(w,normalizeSentence(input)===normalizeSentence(c.answer),input);
+});
+$('clozeDontKnowBtn').addEventListener('click',()=>{
+  if(!session)return;
+  gradeRecall(getWord(session.currentId),false,'');
+});
+
 function showRecall(w){
   hideStages();
   $('recallStage').classList.remove('hidden');
@@ -434,8 +477,9 @@ function showFixation(w,wasCorrect,userInput=''){
   $('fixationStage').classList.remove('hidden');
   $('stageBadge').classList.remove('hidden');
   $('stageBadge').textContent=wasCorrect?'✅ 正解':'❌ 不正解';
-  $('fixWord').textContent=w.word;
-  $('fixCore').textContent=w.core;
+  const cloze=session?.mode==='cloze'?getClozeData(w):null;
+  $('fixWord').textContent=cloze?cloze.answer:w.word;
+  $('fixCore').textContent=cloze?`${w.word} — ${w.core}`:w.core;
   if((w.sentenceEn||'').trim()){
     $('fixSentence').textContent=w.sentenceEn.trim();
     $('fixSentenceWrap').classList.remove('hidden');
@@ -444,11 +488,12 @@ function showFixation(w,wasCorrect,userInput=''){
     $('fixSentenceWrap').classList.add('hidden');
   }
   showStoredImage(w,'fixImage','fixImageWrap');
-  $('replayAudio').onclick=()=>speakEnglish(w.word);
-  speakEnglish(w.word);
-  $('fixNext').textContent = wasCorrect ? ((session.mode==='recall')?'次の単語':'次へ') : '次の単語';
+  const audioText=session?.mode==='cloze'?(w.sentenceEn||cloze?.answer||w.word):w.word;
+  $('replayAudio').onclick=()=>speakEnglish(audioText);
+  speakEnglish(audioText);
+  $('fixNext').textContent = session.mode==='cloze'?'次の問題':(wasCorrect ? ((session.mode==='recall')?'次の単語':'次へ') : '次の単語');
   $('fixNext').onclick=()=>{
-    if(!wasCorrect || session.mode==='recall'){ completeCurrent(); return; }
+    if(session.mode==='cloze' || !wasCorrect || session.mode==='recall'){ completeCurrent(); return; }
     if(session.mode==='recall-use' || session.mode==='full'){
       if(w.sentenceJa && w.sentenceEn) showUse(w); else if(session.mode==='full' && hasConnect(w)) showConnect(w); else completeCurrent();
     }
@@ -504,6 +549,8 @@ async function openWordDialog(id=null){
   $('fieldCore').value=w.core;
   $('fieldSentenceJa').value=w.sentenceJa;
   $('fieldSentenceEn').value=w.sentenceEn;
+  $('fieldClozeSentence').value=w.clozeSentence||'';
+  $('fieldClozeAnswer').value=w.clozeAnswer||'';
   $('fieldAlternatives').value=(w.alternatives||[]).join('\n');
   $('fieldConnectExplanation').value=w.connectExplanation||'';
   renderConnectEditor(w.choices||[],w.correctChoice||0);
@@ -591,6 +638,8 @@ $('wordForm').addEventListener('submit',async e=>{
   if(!w.word||!w.core){toast('英単語とコアイメージは必須です');return;}
   w.sentenceJa=$('fieldSentenceJa').value.trim();
   w.sentenceEn=$('fieldSentenceEn').value.trim();
+  w.clozeSentence=$('fieldClozeSentence').value.trim();
+  w.clozeAnswer=$('fieldClozeAnswer').value.trim();
   w.alternatives=$('fieldAlternatives').value.split('\n').map(x=>x.trim()).filter(Boolean);
   w.connectExplanation=$('fieldConnectExplanation').value.trim();
   const rows=[...$('connectEditor').children];
@@ -645,6 +694,8 @@ function normalizeImportPack(data){
     imageData:(typeof raw.image==='string' && raw.image.startsWith('data:image/')) ? raw.image : null,
     sentenceJa:String(raw.sentenceJa||'').trim(),
     sentenceEn:String(raw.sentenceEn||'').trim(),
+    clozeSentence:typeof raw.clozeSentence==='string'?raw.clozeSentence.trim():null,
+    clozeAnswer:typeof raw.clozeAnswer==='string'?raw.clozeAnswer.trim():null,
     alternatives:Array.isArray(raw.alternatives)?raw.alternatives.map(x=>String(x).trim()).filter(Boolean):[],
     choices:Array.isArray(raw.choices)?raw.choices.map(x=>String(x).trim()).filter(Boolean).slice(0,6):[],
     correctChoice:Number.isInteger(raw.correctChoice)?raw.correctChoice:0,
@@ -678,7 +729,7 @@ $('bulkImportInput').addEventListener('change',e=>{
       const withImages=words.filter(w=>w.imageData).length;
       const withUse=words.filter(w=>w.sentenceJa && w.sentenceEn).length;
       const withConnect=words.filter(w=>w.choices.length>=2 && w.choices[w.correctChoice]).length;
-      $('bulkImportPreview').innerHTML=`<strong>${words.length}語を読み込みました</strong><div class="bulk-counts"><span>🖼️ 画像 ${withImages}</span><span>2️⃣ USE ${withUse}</span><span>3️⃣ CONNECT ${withConnect}</span></div><div class="bulk-preview-list">${words.map(w=>escapeHtml(w.word)+(w.pos?` <small>(${escapeHtml(w.pos)})</small>`:'')).join(' / ')}</div>`;
+      $('bulkImportPreview').innerHTML=`<strong>${words.length}語を読み込みました</strong><div class="bulk-counts"><span>🖼️ 画像 ${withImages}</span><span>⌨️ Sentence ${withUse}</span><span>3️⃣ CONNECT ${withConnect}</span></div><div class="bulk-preview-list">${words.map(w=>escapeHtml(w.word)+(w.pos?` <small>(${escapeHtml(w.pos)})</small>`:'')).join(' / ')}</div>`;
       $('bulkImportPanel').classList.remove('hidden');
       $('runBulkImport').disabled=false;
     }catch(err){
@@ -705,7 +756,7 @@ $('runBulkImport').onclick=async()=>{
       if(existing && mode==='skip'){ skipped++; continue; }
       const w=existing||newWordTemplate();
       w.word=raw.word; w.pos=raw.pos; w.core=raw.core;
-      w.sentenceJa=raw.sentenceJa; w.sentenceEn=raw.sentenceEn; w.alternatives=raw.alternatives;
+      w.sentenceJa=raw.sentenceJa; w.sentenceEn=raw.sentenceEn; if(raw.clozeSentence!==null) w.clozeSentence=raw.clozeSentence; if(raw.clozeAnswer!==null) w.clozeAnswer=raw.clozeAnswer; w.alternatives=raw.alternatives;
       w.choices=raw.choices; w.correctChoice=Math.min(Math.max(0,raw.correctChoice),Math.max(0,raw.choices.length-1));
       w.connectExplanation=raw.connectExplanation; w.updatedAt=Date.now();
       // Image-less update packs preserve an image that the user already registered.
