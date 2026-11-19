@@ -401,13 +401,46 @@ function showCloze(w){
   $('clozeSentence').textContent=c.sentence;
   $('clozeInput').value='';
   $('clozeFeedback').className='feedback hidden';
+  $('clozeFeedback').innerHTML='';
+  $('clozeSubmitBtn').textContent='判定（Enter）';
+  $('clozeDontKnowBtn').classList.remove('hidden');
   showStoredImage(w,'clozeImage','clozeImageWrap');
+  session.clozeAnswered=false;
   session.recallStart=performance.now();
-  setTimeout(()=>$('clozeInput').focus(),100);
+  // iOS will not open the software keyboard before the user's first gesture.
+  // Once the learner has tapped the field, however, keeping the same input
+  // focused lets the keyboard stay open across answers and questions.
+  setTimeout(()=>focusClozeInput(),60);
+}
+function focusClozeInput(){
+  const input=$('clozeInput');
+  if(!input)return;
+  try{ input.focus({preventScroll:true}); }catch(_){ input.focus(); }
+}
+function showClozeResult(w,wasCorrect,userInput=''){
+  const c=getClozeData(w);
+  const completed=(c.sentence||'').replace(/_{3,}/,c.answer).trim() || (w.sentenceEn||'').trim();
+  const f=$('clozeFeedback');
+  f.className='feedback '+(wasCorrect?'good':'bad');
+  const wrongLine=!wasCorrect && userInput
+    ? `<div class="cloze-result-user">あなたの入力：${escapeHtml(userInput)}</div>`
+    : '';
+  f.innerHTML=`<div class="cloze-result-status">${wasCorrect?'✅ 正解':'❌ 不正解'}</div>${wrongLine}<div class="cloze-result-answer">正解：<b>${escapeHtml(c.answer)}</b></div><div class="cloze-result-sentence">${escapeHtml(completed)}</div><div class="cloze-result-hint">Enterでもう一度 → 次の問題</div>`;
+  $('clozeSubmitBtn').textContent='次の問題（Enter）';
+  $('clozeDontKnowBtn').classList.add('hidden');
+  session.clozeAnswered=true;
+  speakEnglish(completed||c.answer||w.word);
+  // Do not hide/replace the input: losing this element's focus closes the iOS keyboard.
+  requestAnimationFrame(()=>focusClozeInput());
 }
 $('clozeForm').addEventListener('submit',e=>{
   e.preventDefault();
   if(!session)return;
+  if(session.clozeAnswered){
+    completeCurrent();
+    requestAnimationFrame(()=>focusClozeInput());
+    return;
+  }
   const w=getWord(session.currentId);
   const input=$('clozeInput').value.trim();
   if(!input)return;
@@ -416,7 +449,13 @@ $('clozeForm').addEventListener('submit',e=>{
 });
 $('clozeDontKnowBtn').addEventListener('click',()=>{
   if(!session)return;
+  if(session.clozeAnswered)return;
   gradeRecall(getWord(session.currentId),false,'');
+  requestAnimationFrame(()=>focusClozeInput());
+});
+// Prevent tapping the two cloze buttons from stealing focus from the text field.
+['clozeSubmitBtn','clozeDontKnowBtn'].forEach(id=>{
+  $(id).addEventListener('pointerdown',e=>e.preventDefault());
 });
 
 function showRecall(w){
@@ -447,13 +486,15 @@ function gradeRecall(w,ok,userInput=''){
     r.correct++; r.streak++; r.wrongStreak=0; r.lastCorrectAt=Date.now();
     w.stats.level=Math.min(7,(w.stats.level||0)+1);
     w.stats.nextDueAt=Date.now()+LEVEL_DAYS[w.stats.level]*DAY;
-    saveState(); showFixation(w,true);
+    saveState();
+    if(session.mode==='cloze') showClozeResult(w,true,userInput); else showFixation(w,true);
   } else {
     r.streak=0; r.wrongStreak++; r.lastWrongAt=Date.now();
     w.stats.level=Math.max(0,(w.stats.level||0)-2);
     w.stats.nextDueAt=Date.now();
     scheduleRetry(w.id);
-    saveState(); showFixation(w,false,userInput);
+    saveState();
+    if(session.mode==='cloze') showClozeResult(w,false,userInput); else showFixation(w,false,userInput);
   }
 }
 $('recallForm').addEventListener('submit',e=>{
@@ -480,15 +521,23 @@ function showFixation(w,wasCorrect,userInput=''){
   const cloze=session?.mode==='cloze'?getClozeData(w):null;
   $('fixWord').textContent=cloze?cloze.answer:w.word;
   $('fixCore').textContent=cloze?`${w.word} — ${w.core}`:w.core;
-  if((w.sentenceEn||'').trim()){
-    $('fixSentence').textContent=w.sentenceEn.trim();
+  // In cloze mode, always reconstruct the exact sentence shown in the question.
+  // This prevents the answer screen from showing a different example sentence.
+  const completedClozeSentence = cloze
+    ? cloze.sentence.replace(/_{3,}/, cloze.answer).trim()
+    : '';
+  const resultSentence = cloze
+    ? (completedClozeSentence || (w.sentenceEn||'').trim())
+    : (w.sentenceEn||'').trim();
+  if(resultSentence){
+    $('fixSentence').textContent=resultSentence;
     $('fixSentenceWrap').classList.remove('hidden');
   } else {
     $('fixSentence').textContent='';
     $('fixSentenceWrap').classList.add('hidden');
   }
   showStoredImage(w,'fixImage','fixImageWrap');
-  const audioText=session?.mode==='cloze'?(w.sentenceEn||cloze?.answer||w.word):w.word;
+  const audioText=session?.mode==='cloze'?(resultSentence||cloze?.answer||w.word):w.word;
   $('replayAudio').onclick=()=>speakEnglish(audioText);
   speakEnglish(audioText);
   $('fixNext').textContent = session.mode==='cloze'?'次の問題':(wasCorrect ? ((session.mode==='recall')?'次の単語':'次へ') : '次の単語');

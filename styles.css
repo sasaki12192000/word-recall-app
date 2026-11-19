@@ -26,3 +26,11 @@
 #clozeStage .core-image-wrap{margin-top:14px}
 #clozeStage form{max-width:720px;margin-left:auto;margin-right:auto}
 @media(max-width:780px){.cloze-sentence{font-size:24px;padding:15px 12px}.cloze-ja{font-size:21px}.sentence-mode-card{max-width:none}}
+
+
+/* v0.7.2: inline cloze result keeps the same input focused so iOS keyboard stays open */
+.cloze-result-status{font-weight:800;margin-bottom:8px}
+.cloze-result-user{font-size:.92rem;opacity:.8;margin-bottom:6px}
+.cloze-result-answer{margin-bottom:8px}
+.cloze-result-sentence{font-size:1.08rem;font-weight:700;line-height:1.5;margin-top:8px}
+.cloze-result-hint{font-size:.82rem;opacity:.72;margin-top:10px}
