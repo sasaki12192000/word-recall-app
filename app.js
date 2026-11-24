@@ -282,7 +282,7 @@ async function replaceStateAndImages(newState,imageEntries){
 }
 function newWordTemplate(){
   const now = Date.now();
-  return {id:crypto.randomUUID ? crypto.randomUUID() : String(now)+Math.random(),word:'',pos:'',core:'',hasImage:false,sentenceJa:'',sentenceEn:'',clozeSentence:'',clozeAnswer:'',alternatives:[],choices:[],correctChoice:0,connectExplanation:'',createdAt:now,updatedAt:now,stats:{level:0,nextDueAt:now,recall:{attempts:0,correct:0,streak:0,wrongStreak:0,totalMs:0,lastCorrectAt:null,lastWrongAt:null},use:{attempts:0,correct:0,almost:0},connect:{attempts:0,correct:0}}};
+  return {id:crypto.randomUUID ? crypto.randomUUID() : String(now)+Math.random(),word:'',pos:'',core:'',hasImage:false,sentenceJa:'',sentenceEn:'',clozeJaTarget:'',clozeSentence:'',clozeAnswer:'',alternatives:[],choices:[],correctChoice:0,connectExplanation:'',createdAt:now,updatedAt:now,stats:{level:0,nextDueAt:now,recall:{attempts:0,correct:0,streak:0,wrongStreak:0,totalMs:0,lastCorrectAt:null,lastWrongAt:null},use:{attempts:0,correct:0,almost:0},connect:{attempts:0,correct:0}}};
 }
 function normalizeWord(s){ return (s||'').trim().toLowerCase().replace(/[’]/g,"'"); }
 function normalizeSentence(s){ return (s||'').trim().toLowerCase().replace(/[’]/g,"'").replace(/[.,!?;:\"“”]/g,'').replace(/\s+/g,' '); }
@@ -392,12 +392,23 @@ function getClozeData(w){
   // After importing the v0.7 migration pack, all existing cards use explicit cloze data.
   return {sentence:'______',answer:full||target,manual:false};
 }
+function renderClozeJapanese(w){
+  const el=$('clozeJa');
+  const sentence=(w.sentenceJa||w.core||'').trim();
+  const target=(w.clozeJaTarget||'').trim();
+  if(target && sentence.includes(target)){
+    const i=sentence.indexOf(target);
+    el.innerHTML=escapeHtml(sentence.slice(0,i))+'<span class="cloze-ja-target">'+escapeHtml(target)+'</span>'+escapeHtml(sentence.slice(i+target.length));
+    return;
+  }
+  el.textContent=sentence;
+}
 function showCloze(w){
   hideStages();
   $('clozeStage').classList.remove('hidden');
   $('stageBadge').classList.add('hidden');
   const c=getClozeData(w);
-  $('clozeJa').textContent=w.sentenceJa||w.core||'';
+  renderClozeJapanese(w);
   $('clozeSentence').textContent=c.sentence;
   $('clozeInput').value='';
   $('clozeFeedback').className='feedback hidden';
@@ -598,6 +609,7 @@ async function openWordDialog(id=null){
   $('fieldCore').value=w.core;
   $('fieldSentenceJa').value=w.sentenceJa;
   $('fieldSentenceEn').value=w.sentenceEn;
+  $('fieldClozeJaTarget').value=w.clozeJaTarget||'';
   $('fieldClozeSentence').value=w.clozeSentence||'';
   $('fieldClozeAnswer').value=w.clozeAnswer||'';
   $('fieldAlternatives').value=(w.alternatives||[]).join('\n');
@@ -687,6 +699,7 @@ $('wordForm').addEventListener('submit',async e=>{
   if(!w.word||!w.core){toast('英単語とコアイメージは必須です');return;}
   w.sentenceJa=$('fieldSentenceJa').value.trim();
   w.sentenceEn=$('fieldSentenceEn').value.trim();
+  w.clozeJaTarget=$('fieldClozeJaTarget').value.trim();
   w.clozeSentence=$('fieldClozeSentence').value.trim();
   w.clozeAnswer=$('fieldClozeAnswer').value.trim();
   w.alternatives=$('fieldAlternatives').value.split('\n').map(x=>x.trim()).filter(Boolean);
@@ -743,6 +756,7 @@ function normalizeImportPack(data){
     imageData:(typeof raw.image==='string' && raw.image.startsWith('data:image/')) ? raw.image : null,
     sentenceJa:String(raw.sentenceJa||'').trim(),
     sentenceEn:String(raw.sentenceEn||'').trim(),
+    clozeJaTarget:typeof raw.clozeJaTarget==='string'?raw.clozeJaTarget.trim():null,
     clozeSentence:typeof raw.clozeSentence==='string'?raw.clozeSentence.trim():null,
     clozeAnswer:typeof raw.clozeAnswer==='string'?raw.clozeAnswer.trim():null,
     alternatives:Array.isArray(raw.alternatives)?raw.alternatives.map(x=>String(x).trim()).filter(Boolean):[],
@@ -805,7 +819,7 @@ $('runBulkImport').onclick=async()=>{
       if(existing && mode==='skip'){ skipped++; continue; }
       const w=existing||newWordTemplate();
       w.word=raw.word; w.pos=raw.pos; w.core=raw.core;
-      w.sentenceJa=raw.sentenceJa; w.sentenceEn=raw.sentenceEn; if(raw.clozeSentence!==null) w.clozeSentence=raw.clozeSentence; if(raw.clozeAnswer!==null) w.clozeAnswer=raw.clozeAnswer; w.alternatives=raw.alternatives;
+      w.sentenceJa=raw.sentenceJa; w.sentenceEn=raw.sentenceEn; if(raw.clozeJaTarget!==null) w.clozeJaTarget=raw.clozeJaTarget; if(raw.clozeSentence!==null) w.clozeSentence=raw.clozeSentence; if(raw.clozeAnswer!==null) w.clozeAnswer=raw.clozeAnswer; w.alternatives=raw.alternatives;
       w.choices=raw.choices; w.correctChoice=Math.min(Math.max(0,raw.correctChoice),Math.max(0,raw.choices.length-1));
       w.connectExplanation=raw.connectExplanation; w.updatedAt=Date.now();
       // Image-less update packs preserve an image that the user already registered.

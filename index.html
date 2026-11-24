@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#111827" />
   <title>Word Recall</title>
-  <link rel="stylesheet" href="styles.css?v=0.7.2" />
+  <link rel="stylesheet" href="styles.css?v=0.7.3" />
 </head>
 <body>
   <header class="app-header">
@@ -68,7 +68,7 @@
       <div id="studyCard" class="study-card card">
         <div id="stageBadge" class="stage-badge"></div>
         <div id="clozeStage" class="stage hidden">
-          <p class="prompt-label">日本語と絵を見て、空欄に入る英語は？</p>
+          <p class="prompt-label">赤字の日本語と絵を見て、空欄に入る英語は？</p>
           <div id="clozeJa" class="sentence-ja cloze-ja"></div>
           <div id="clozeSentence" class="cloze-sentence"></div>
           <div id="clozeImageWrap" class="core-image-wrap hidden"><img id="clozeImage" alt="英文の場面イメージ" /></div>
@@ -196,6 +196,7 @@
         <div class="form-section wide"><h3>Sentence Recall</h3><p>日本語例文と画像を見ながら、英文の空欄部分をタイピングします。</p></div>
         <label class="wide">日本語例文<textarea id="fieldSentenceJa" rows="2" placeholder="例: 私はその仕事に応募しました。"></textarea></label>
         <label class="wide">模範英文<textarea id="fieldSentenceEn" rows="2" placeholder="例: I applied for the job."></textarea></label>
+        <label class="wide">日本語例文の赤字部分<input id="fieldClozeJaTarget" placeholder="例: 応募しました" /></label>
         <label class="wide">穴埋め英文<textarea id="fieldClozeSentence" rows="2" placeholder="例: I ______ the job."></textarea></label>
         <label class="wide">空欄の正解<input id="fieldClozeAnswer" placeholder="例: applied for" /></label>
         <div class="form-section wide"><h3>旧 USE / CONNECT データ</h3><p>旧データとの互換性のため保持します。新しい文脈タイピングでは使用しません。</p></div>
@@ -210,7 +211,7 @@
     </form>
   </dialog>
   <div id="toast" class="toast hidden"></div>
-  <script src="app.js?v=0.7.2"></script>
+  <script src="app.js?v=0.7.3"></script>
   <script src="ui-v0.6.js?v=0.7.1"></script>
 </body>
 </html>

@@ -34,3 +34,6 @@
 .cloze-result-answer{margin-bottom:8px}
 .cloze-result-sentence{font-size:1.08rem;font-weight:700;line-height:1.5;margin-top:8px}
 .cloze-result-hint{font-size:.82rem;opacity:.72;margin-top:10px}
+
+/* v0.7.3: show the Japanese phrase corresponding to the English blank */
+.cloze-ja-target{color:#d92d20;font-weight:900;text-decoration:underline;text-decoration-thickness:3px;text-underline-offset:4px}
