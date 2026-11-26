@@ -501,12 +501,18 @@ function runAutoCountdown(seconds,token,onDone){
     }else el.textContent=remaining;
   },1000);
 }
-function runAutoAnswerTimer(seconds,token,onReady){
+function runAutoAnswerTimer(seconds,token,onTimeDone,onReady){
   const el=$('autoAnswerTimer');
   const started=Date.now();
   let speechDone=false;
   let timeDone=false;
+  let timeNotified=false;
   let fired=false;
+  const notifyTimeDone=()=>{
+    if(timeNotified)return;
+    timeNotified=true;
+    if(typeof onTimeDone==='function') onTimeDone();
+  };
   const maybeReady=()=>{
     if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence' || fired)return;
     if(speechDone && timeDone){ fired=true; onReady(); }
@@ -518,6 +524,7 @@ function runAutoAnswerTimer(seconds,token,onReady){
     if(remain<=0){
       timeDone=true;
       if(autoAnswerTimer){clearInterval(autoAnswerTimer);autoAnswerTimer=null;}
+      notifyTimeDone();
       maybeReady();
     }
   };
@@ -525,13 +532,13 @@ function runAutoAnswerTimer(seconds,token,onReady){
   if(!timeDone) autoAnswerTimer=setInterval(update,200);
   return ()=>{ speechDone=true; maybeReady(); };
 }
-function updateAutoJudgeUi(ok){
+function updateAutoJudgeUi(ok,autoTimeout=false){
   const good=$('autoCorrectBtn'), bad=$('autoWrongBtn'), status=$('autoJudgeStatus');
   good.classList.toggle('selected',ok===true);
   bad.classList.toggle('selected',ok===false);
   good.disabled=true;
   bad.disabled=true;
-  status.textContent=ok?'✅ 間違えなかった':'❌ 間違えた';
+  status.textContent=autoTimeout?'⏱️ 時間切れ → 間違い扱い':(ok?'✅ 間違えなかった':'❌ 間違えた');
   status.className='auto-judge-status '+(ok?'good':'bad');
 }
 function maybeAdvanceAutoSentence(token){
@@ -543,14 +550,14 @@ function maybeAdvanceAutoSentence(token){
     nextWord();
   },180);
 }
-function judgeAutoSentence(ok){
+function judgeAutoSentence(ok,autoTimeout=false){
   if(!session || session.mode!=='auto-sentence' || session.autoJudgment!==null)return;
   const w=getWord(session.currentId);
   if(!w)return;
   session.autoJudgment=!!ok;
   recordRecallResult(w,!!ok,null);
   markMasteryResult(w.id,!!ok);
-  updateAutoJudgeUi(!!ok);
+  updateAutoJudgeUi(!!ok,autoTimeout);
   persistState();
   maybeAdvanceAutoSentence(session.autoToken);
 }
@@ -586,8 +593,14 @@ function showAutoSentence(w){
       $('autoEnglishWrap').classList.remove('hidden');
       const markSpeechDone=runAutoAnswerTimer(answerSeconds,token,()=>{
         if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
+        // If the learner did not judge within the answer-display countdown,
+        // automatically record it as wrong. The English audio is still allowed
+        // to finish before moving to the next question.
+        if(session.autoJudgment===null) judgeAutoSentence(false,true);
+      },()=>{
+        if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
         session.autoAnswerReady=true;
-        $('autoAnswerTimer').textContent=session.autoJudgment===null?'判定を選んでください':'確認完了';
+        $('autoAnswerTimer').textContent='確認完了';
         maybeAdvanceAutoSentence(token);
       });
       // Keep the answer visible for at least the selected time and never cut the English audio short.
