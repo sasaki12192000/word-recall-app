@@ -32,6 +32,8 @@
 .cloze-result-status{font-weight:800;margin-bottom:8px}
 .cloze-result-user{font-size:.92rem;opacity:.8;margin-bottom:6px}
 .cloze-result-answer{margin-bottom:8px}
+.cloze-result-core{margin:6px 0 12px;padding:10px 12px;border-radius:10px;background:var(--soft,#f6f7f9);font-size:.96rem;line-height:1.55;color:#202939}
+.cloze-result-core-label{font-weight:800;margin-right:4px}
 .cloze-result-sentence{font-size:1.08rem;font-weight:700;line-height:1.5;margin-top:8px}
 .cloze-result-hint{font-size:.82rem;opacity:.72;margin-top:10px}
 
