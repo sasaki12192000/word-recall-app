@@ -19,13 +19,13 @@
 .fix-sentence{color:var(--text);font-size:clamp(18px,2.6vw,23px);font-weight:750;line-height:1.55}
 
 /* v0.7 Sentence Recall */
-.sentence-mode-grid{grid-template-columns:minmax(0,1fr)}
+.sentence-mode-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 .sentence-mode-card{max-width:760px;width:100%}
 .cloze-ja{margin:14px 0 10px;text-align:center}
 .cloze-sentence{font-size:clamp(23px,4vw,34px);line-height:1.55;font-weight:850;text-align:center;margin:16px auto 20px;max-width:760px;padding:18px 16px;border:1px solid var(--line);border-radius:16px;background:#f8fafc;white-space:pre-wrap}
 #clozeStage .core-image-wrap{margin-top:14px}
 #clozeStage form{max-width:720px;margin-left:auto;margin-right:auto}
-@media(max-width:780px){.cloze-sentence{font-size:24px;padding:15px 12px}.cloze-ja{font-size:21px}.sentence-mode-card{max-width:none}}
+@media(max-width:780px){.cloze-sentence{font-size:24px;padding:15px 12px}.cloze-ja{font-size:21px}.sentence-mode-card{max-width:none}.sentence-mode-grid{grid-template-columns:1fr}}
 
 
 /* v0.7.2: inline cloze result keeps the same input focused so iOS keyboard stays open */
@@ -39,3 +39,17 @@
 
 /* v0.7.3: show the Japanese phrase corresponding to the English blank */
 .cloze-ja-target{color:#d92d20;font-weight:900;text-decoration:underline;text-decoration-thickness:3px;text-underline-offset:4px}
+
+
+/* v0.7.5: automatic Japanese -> English mental composition mode */
+.auto-study-options{margin-top:10px}
+.auto-study-options>strong{font-size:14px}
+.auto-study-options small{color:var(--muted);line-height:1.5}
+.auto-sentence-ja{font-size:clamp(26px,4.5vw,38px);font-weight:850;line-height:1.65;text-align:center;margin:28px auto;max-width:760px}
+.auto-think-wrap,.auto-english-wrap{max-width:760px;margin:22px auto 0;padding:22px 18px;border:1px solid var(--line);border-radius:18px;background:#f8fafc;text-align:center}
+.auto-phase-label{font-size:13px;font-weight:850;color:var(--muted);letter-spacing:.05em;margin-bottom:8px}
+.auto-countdown{font-size:clamp(54px,11vw,88px);font-weight:950;line-height:1;color:var(--text);font-variant-numeric:tabular-nums}
+.auto-sentence-en{font-size:clamp(25px,4.4vw,38px);font-weight:850;line-height:1.55;color:var(--text)}
+.auto-answer-timer{margin-top:12px;color:var(--muted);font-size:13px;font-weight:750}
+.auto-note{text-align:center;margin-top:18px;color:var(--muted);font-size:12px}
+@media(max-width:780px){.auto-sentence-ja{font-size:26px;margin:22px auto}.auto-sentence-en{font-size:25px}.auto-think-wrap,.auto-english-wrap{padding:18px 14px}}

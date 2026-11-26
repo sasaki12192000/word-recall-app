@@ -14,6 +14,9 @@ let dbPromise = null;
 let saveChain = Promise.resolve();
 let migratedImageCount = 0;
 let migrationWarning = false;
+let autoSequenceToken = 0;
+let autoCountdownTimer = null;
+let autoAnswerTimer = null;
 
 // Image data is intentionally kept OUT of `state`.
 // The lightweight vocabulary/statistics state lives in STORE_NAME,
@@ -310,19 +313,42 @@ function startDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate()).
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
 function toast(msg){ $('toast').textContent=msg; $('toast').classList.remove('hidden'); clearTimeout(toast.t); toast.t=setTimeout(()=>$('toast').classList.add('hidden'),2200); }
 
-function speakEnglish(text){
-  if(!text || !('speechSynthesis' in window)) return;
+function chooseVoice(lang){
+  const voices=window.speechSynthesis?.getVoices?.()||[];
+  const exact=voices.find(v=>(v.lang||'').toLowerCase()===lang.toLowerCase());
+  if(exact)return exact;
+  const base=lang.split('-')[0].toLowerCase();
+  return voices.find(v=>(v.lang||'').toLowerCase().startsWith(base))||null;
+}
+function speakText(text,lang='en-US',rate=0.88,{cancelFirst=true,onDone=null}={}){
+  if(!text || !('speechSynthesis' in window)){ if(onDone)onDone(); return null; }
   try{
-    window.speechSynthesis.cancel();
+    if(cancelFirst) window.speechSynthesis.cancel();
     const utterance=new SpeechSynthesisUtterance(text);
-    utterance.lang='en-US';
-    utterance.rate=0.88;
+    utterance.lang=lang;
+    utterance.rate=rate;
     utterance.pitch=1;
-    const voices=window.speechSynthesis.getVoices?.()||[];
-    const voice=voices.find(v=>/^en-US$/i.test(v.lang)) || voices.find(v=>/^en-US/i.test(v.lang)) || voices.find(v=>/^en/i.test(v.lang));
+    const voice=chooseVoice(lang);
     if(voice) utterance.voice=voice;
+    if(onDone){
+      let done=false;
+      const finish=()=>{ if(done)return; done=true; onDone(); };
+      utterance.onend=finish;
+      utterance.onerror=finish;
+      // Safety fallback for browsers that occasionally omit speech events.
+      setTimeout(finish,Math.max(5000,Math.min(18000,String(text).length*140)));
+    }
     window.speechSynthesis.speak(utterance);
-  }catch(err){ console.warn('Speech synthesis failed',err); }
+    return utterance;
+  }catch(err){ console.warn('Speech synthesis failed',err); if(onDone)onDone(); return null; }
+}
+function speakEnglish(text,onDone=null){ return speakText(text,'en-US',0.88,{cancelFirst:true,onDone}); }
+function speakJapanese(text,onDone=null){ return speakText(text,'ja-JP',0.92,{cancelFirst:true,onDone}); }
+function stopAutoPlayback(){
+  autoSequenceToken++;
+  if(autoCountdownTimer){ clearInterval(autoCountdownTimer); autoCountdownTimer=null; }
+  if(autoAnswerTimer){ clearInterval(autoAnswerTimer); autoAnswerTimer=null; }
+  if('speechSynthesis' in window){ try{ window.speechSynthesis.cancel(); }catch(_){} }
 }
 
 
@@ -348,6 +374,7 @@ function renderStats(){
 }
 
 function showView(name){
+  if(name!=='study' && session?.mode==='auto-sentence'){ stopAutoPlayback(); session=null; }
   $$('.view').forEach(v=>v.classList.remove('active')); const v=$('view-'+name); if(v)v.classList.add('active');
   $$('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
 }
@@ -366,16 +393,18 @@ function weightedOrder(words){
 function startStudy(mode){
   if(!state.words.length){ toast('先に単語を登録してください'); showView('words'); return; }
   const now=Date.now(), includeEarly=$('includeEarly').checked;
-  let candidates=state.words.filter(w=>(mode!=='cloze' || (w.sentenceJa && w.sentenceEn)) && (includeEarly || (w.stats.nextDueAt||0)<=now));
+  const needsSentence=mode==='cloze' || mode==='auto-sentence';
+  let candidates=state.words.filter(w=>(!needsSentence || (w.sentenceJa && w.sentenceEn)) && (includeEarly || (w.stats.nextDueAt||0)<=now));
   if(!candidates.length){ toast('今日の復習対象はありません。「復習日前も追加練習」をONにできます。'); return; }
   candidates=weightedOrder(candidates);
   const size=$('sessionSize').value; if(size!=='all') candidates=candidates.slice(0,Number(size));
-  session={mode, queue:candidates.map(w=>w.id), index:0, initialCount:candidates.length, completed:0, currentId:null, recallStart:0, requeued:{}};
-  $('studyModeLabel').textContent= mode==='cloze'?'⌨️ 文脈タイピング':mode==='recall'?'⚡ 単語集中':mode==='recall-use'?'🔹 標準学習':'🔥 深掘り学習';
+  stopAutoPlayback();
+  session={mode, queue:candidates.map(w=>w.id), index:0, initialCount:candidates.length, completed:0, currentId:null, recallStart:0, requeued:{}, autoThinkSeconds:Number($('autoThinkSeconds')?.value||5), autoAnswerSeconds:Number($('autoAnswerSeconds')?.value||5)};
+  $('studyModeLabel').textContent= mode==='cloze'?'⌨️ 文脈タイピング':mode==='auto-sentence'?'🎧 自動瞬間英作文':mode==='recall'?'⚡ 単語集中':mode==='recall-use'?'🔹 標準学習':'🔥 深掘り学習';
   showView('study'); nextWord();
 }
 $$('.mode-card').forEach(b=>b.addEventListener('click',()=>startStudy(b.dataset.mode)));
-$('quitStudy').onclick=()=>{ session=null; showView('home'); renderAll(); };
+$('quitStudy').onclick=()=>{ stopAutoPlayback(); session=null; showView('home'); renderAll(); };
 
 function getWord(id){ return state.words.find(w=>w.id===id); }
 function updateStudyProgress(){
@@ -384,12 +413,88 @@ function updateStudyProgress(){
 function nextWord(){
   if(!session)return;
   if(session.index>=session.queue.length){ finishSession(); return; }
-  session.currentId=session.queue[session.index++]; updateStudyProgress(); const w=getWord(session.currentId); if(session.mode==='cloze') showCloze(w); else showRecall(w);
+  session.currentId=session.queue[session.index++]; updateStudyProgress(); const w=getWord(session.currentId); if(session.mode==='cloze') showCloze(w); else if(session.mode==='auto-sentence') showAutoSentence(w); else showRecall(w);
 }
 function finishSession(){
+  stopAutoPlayback();
   $('progressBar').style.width='100%'; $('studyCard').innerHTML=`<div style="text-align:center;padding:32px"><div style="font-size:48px">✅</div><h2>今日の学習完了</h2><p style="color:#667085">${session.completed}件の学習を終えました。</p><button id="backHomeAfter" class="primary-btn">学習画面へ戻る</button></div>`; $('backHomeAfter').onclick=()=>location.reload();
 }
-function hideStages(){ ['clozeStage','recallStage','fixationStage','useStage','connectStage'].forEach(id=>$(id).classList.add('hidden')); }
+function hideStages(){ ['clozeStage','autoSentenceStage','recallStage','fixationStage','useStage','connectStage'].forEach(id=>$(id).classList.add('hidden')); }
+function getAutoSeconds(id,fallback){
+  const n=Number($(id)?.value||fallback);
+  return [3,5,7,10].includes(n)?n:fallback;
+}
+function runAutoCountdown(seconds,token,onDone){
+  const el=$('autoCountdown');
+  let remaining=Math.max(1,seconds);
+  el.textContent=remaining;
+  if(autoCountdownTimer){ clearInterval(autoCountdownTimer); autoCountdownTimer=null; }
+  autoCountdownTimer=setInterval(()=>{
+    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence'){
+      clearInterval(autoCountdownTimer); autoCountdownTimer=null; return;
+    }
+    remaining--;
+    if(remaining<=0){
+      clearInterval(autoCountdownTimer); autoCountdownTimer=null;
+      onDone();
+    }else el.textContent=remaining;
+  },1000);
+}
+function runAutoAnswerTimer(seconds,token,onDone){
+  const el=$('autoAnswerTimer');
+  const started=Date.now();
+  let speechDone=false;
+  let timeDone=false;
+  const maybeDone=()=>{
+    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
+    if(speechDone && timeDone) onDone();
+  };
+  const update=()=>{
+    const elapsed=(Date.now()-started)/1000;
+    const remain=Math.max(0,seconds-elapsed);
+    el.textContent=remain>0?`次の問題まで ${Math.ceil(remain)}秒`:'音声の終了を待っています…';
+    if(remain<=0){
+      timeDone=true;
+      if(autoAnswerTimer){clearInterval(autoAnswerTimer);autoAnswerTimer=null;}
+      maybeDone();
+    }
+  };
+  update();
+  if(!timeDone) autoAnswerTimer=setInterval(update,200);
+  return ()=>{ speechDone=true; maybeDone(); };
+}
+function showAutoSentence(w){
+  stopAutoPlayback();
+  const token=autoSequenceToken;
+  hideStages();
+  $('autoSentenceStage').classList.remove('hidden');
+  $('stageBadge').classList.add('hidden');
+  $('autoSentenceJa').textContent=(w.sentenceJa||'').trim();
+  $('autoSentenceEn').textContent=(w.sentenceEn||'').trim();
+  $('autoThinkWrap').classList.remove('hidden');
+  $('autoEnglishWrap').classList.add('hidden');
+  $('autoCountdown').textContent='…';
+  $('autoAnswerTimer').textContent='';
+  const thinkSeconds=session?.autoThinkSeconds||getAutoSeconds('autoThinkSeconds',5);
+  const answerSeconds=session?.autoAnswerSeconds||getAutoSeconds('autoAnswerSeconds',5);
+  // 1) Show Japanese and read it aloud. 2) After Japanese audio ends, start thinking countdown.
+  speakJapanese(w.sentenceJa,()=>{
+    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
+    runAutoCountdown(thinkSeconds,token,()=>{
+      if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
+      $('autoThinkWrap').classList.add('hidden');
+      $('autoEnglishWrap').classList.remove('hidden');
+      const markSpeechDone=runAutoAnswerTimer(answerSeconds,token,()=>{
+        if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
+        session.completed++;
+        nextWord();
+      });
+      // Keep the answer visible for at least the selected time and never cut the English audio short.
+      speakEnglish(w.sentenceEn,markSpeechDone);
+    });
+  });
+}
+
 function getClozeData(w){
   const manualSentence=(w.clozeSentence||'').trim();
   const manualAnswer=(w.clozeAnswer||'').trim();
@@ -924,8 +1029,20 @@ $('resetBtn').onclick=async()=>{
 };
 
 
+['autoThinkSeconds','autoAnswerSeconds'].forEach(id=>{
+  $(id)?.addEventListener('change',()=>{
+    state.settings=state.settings||{};
+    state.settings[id]=getAutoSeconds(id,5);
+    persistState();
+  });
+});
+
 async function init(){
   state=await loadState();
+  const savedThink=Number(state.settings?.autoThinkSeconds||5);
+  const savedAnswer=Number(state.settings?.autoAnswerSeconds||5);
+  if($('autoThinkSeconds')) $('autoThinkSeconds').value=String([3,5,7,10].includes(savedThink)?savedThink:5);
+  if($('autoAnswerSeconds')) $('autoAnswerSeconds').value=String([3,5,7,10].includes(savedAnswer)?savedAnswer:5);
   // v0.7.4: Older on-device cards may already have clozeSentence/clozeAnswer
   // but not clozeJaTarget. Fill only missing Japanese targets from the bundled
   // 753-card migration map. IDs, images and learning statistics are untouched.
