@@ -368,7 +368,9 @@ function renderStats(){
   const total=state.words.length, attempts=state.words.reduce((s,w)=>s+w.stats.recall.attempts,0), correct=state.words.reduce((s,w)=>s+w.stats.recall.correct,0), due=state.words.filter(w=>(w.stats.nextDueAt||0)<=Date.now()).length, mastered=state.words.filter(w=>w.stats.level>=5).length;
   $('statsSummary').innerHTML=[['登録単語',total],['Sentence 正解率',`${pct(correct,attempts)}%`],['今日の復習',due],['Level 5+',mastered]].map(([l,v])=>`<div class="summary-card"><strong>${v}</strong><span>${l}</span></div>`).join('');
   $('statsTable').innerHTML=[...state.words].sort((a,b)=>(a.stats.nextDueAt||0)-(b.stats.nextDueAt||0)).map(w=>{
-    const r=w.stats.recall,u=w.stats.use,c=w.stats.connect, avg=r.attempts ? (r.totalMs/r.attempts/1000).toFixed(1)+'秒':'—';
+    const r=w.stats.recall,u=w.stats.use,c=w.stats.connect;
+    const timedAttempts=Number.isFinite(r.timedAttempts)?r.timedAttempts:r.attempts;
+    const avg=timedAttempts ? (r.totalMs/timedAttempts/1000).toFixed(1)+'秒':'—';
     return `<tr><td><b>${escapeHtml(w.word)}</b></td><td>${w.stats.level}</td><td>${pct(r.correct,r.attempts)}% (${r.correct}/${r.attempts})</td><td>${avg}</td><td>${pct(u.correct,u.attempts)}%</td><td>${pct(c.correct,c.attempts)}%</td><td>${fmtDue(w.stats.nextDueAt)}</td></tr>`;
   }).join('');
 }
@@ -385,7 +387,8 @@ function weightedOrder(words){
   return words.map(w=>{
     const r=w.stats.recall, rate=r.attempts?r.correct/r.attempts:.35;
     const overdue=Math.max(0,(now-(w.stats.nextDueAt||now))/DAY);
-    const slow=r.attempts?r.totalMs/r.attempts/1000:8;
+    const timedAttempts=Number.isFinite(r.timedAttempts)?r.timedAttempts:r.attempts;
+    const slow=timedAttempts?r.totalMs/timedAttempts/1000:8;
     const score=10+Math.min(30,overdue*2)+(1-rate)*25+(7-w.stats.level)*3+Math.min(8,slow/2)+(Math.random()*8);
     return {w,key:Math.pow(Math.random(),1/Math.max(1,score))};
   }).sort((a,b)=>b.key-a.key).map(x=>x.w);
@@ -399,7 +402,25 @@ function startStudy(mode){
   candidates=weightedOrder(candidates);
   const size=$('sessionSize').value; if(size!=='all') candidates=candidates.slice(0,Number(size));
   stopAutoPlayback();
-  session={mode, queue:candidates.map(w=>w.id), index:0, initialCount:candidates.length, completed:0, currentId:null, recallStart:0, requeued:{}, autoThinkSeconds:Number($('autoThinkSeconds')?.value||5), autoAnswerSeconds:Number($('autoAnswerSeconds')?.value||5)};
+  const ids=candidates.map(w=>w.id);
+  session={
+    mode,
+    queue:[...ids],
+    index:0,
+    initialIds:[...ids],
+    remainingIds:[...ids],
+    initialCount:ids.length,
+    completed:0,
+    currentId:null,
+    recallStart:0,
+    requeued:{},
+    roundNumber:1,
+    attemptCount:0,
+    autoJudgment:null,
+    autoAnswerReady:false,
+    autoThinkSeconds:Number($('autoThinkSeconds')?.value||5),
+    autoAnswerSeconds:Number($('autoAnswerSeconds')?.value||5)
+  };
   $('studyModeLabel').textContent= mode==='cloze'?'⌨️ 文脈タイピング':mode==='auto-sentence'?'🎧 自動瞬間英作文':mode==='recall'?'⚡ 単語集中':mode==='recall-use'?'🔹 標準学習':'🔥 深掘り学習';
   showView('study'); nextWord();
 }
@@ -407,17 +428,57 @@ $$('.mode-card').forEach(b=>b.addEventListener('click',()=>startStudy(b.dataset.
 $('quitStudy').onclick=()=>{ stopAutoPlayback(); session=null; showView('home'); renderAll(); };
 
 function getWord(id){ return state.words.find(w=>w.id===id); }
+function isMasterySession(){ return !!session && (session.mode==='cloze' || session.mode==='auto-sentence'); }
+function markMasteryResult(id,ok){
+  if(!isMasterySession())return;
+  session.attemptCount=(session.attemptCount||0)+1;
+  if(ok) session.remainingIds=(session.remainingIds||[]).filter(x=>x!==id);
+  else if(!(session.remainingIds||[]).includes(id)) session.remainingIds.push(id);
+  updateStudyProgress();
+}
 function updateStudyProgress(){
-  if(!session)return; $('studyProgress').textContent=`${Math.min(session.completed+1,session.queue.length)} / ${session.queue.length}`; const p=session.queue.length?session.completed/session.queue.length*100:0; $('progressBar').style.width=`${p}%`;
+  if(!session)return;
+  if(isMasterySession()){
+    const total=session.initialCount||0;
+    const remaining=(session.remainingIds||[]).length;
+    const mastered=Math.max(0,total-remaining);
+    $('studyProgress').textContent=`残り ${remaining} / ${total} ・ ${session.roundNumber||1}周目`;
+    $('progressBar').style.width=`${total?mastered/total*100:0}%`;
+    return;
+  }
+  $('studyProgress').textContent=`${Math.min(session.completed+1,session.queue.length)} / ${session.queue.length}`;
+  const p=session.queue.length?session.completed/session.queue.length*100:0;
+  $('progressBar').style.width=`${p}%`;
 }
 function nextWord(){
   if(!session)return;
-  if(session.index>=session.queue.length){ finishSession(); return; }
-  session.currentId=session.queue[session.index++]; updateStudyProgress(); const w=getWord(session.currentId); if(session.mode==='cloze') showCloze(w); else if(session.mode==='auto-sentence') showAutoSentence(w); else showRecall(w);
+  if(session.index>=session.queue.length){
+    if(isMasterySession() && (session.remainingIds||[]).length){
+      const remainingWords=session.remainingIds.map(getWord).filter(Boolean);
+      session.queue=weightedOrder(remainingWords).map(w=>w.id);
+      session.index=0;
+      session.roundNumber=(session.roundNumber||1)+1;
+      updateStudyProgress();
+      toast(`${session.roundNumber}周目：間違えた ${session.remainingIds.length}問だけ再挑戦`);
+    }else{
+      finishSession();
+      return;
+    }
+  }
+  session.currentId=session.queue[session.index++];
+  updateStudyProgress();
+  const w=getWord(session.currentId);
+  if(session.mode==='cloze') showCloze(w); else if(session.mode==='auto-sentence') showAutoSentence(w); else showRecall(w);
 }
 function finishSession(){
   stopAutoPlayback();
-  $('progressBar').style.width='100%'; $('studyCard').innerHTML=`<div style="text-align:center;padding:32px"><div style="font-size:48px">✅</div><h2>今日の学習完了</h2><p style="color:#667085">${session.completed}件の学習を終えました。</p><button id="backHomeAfter" class="primary-btn">学習画面へ戻る</button></div>`; $('backHomeAfter').onclick=()=>location.reload();
+  $('progressBar').style.width='100%';
+  const mastery=isMasterySession();
+  const detail=mastery
+    ? `${session.initialCount}問すべて「間違えなかった」になるまで完了しました。<br><span class="session-finish-meta">${session.roundNumber||1}周・合計${session.attemptCount||0}回答</span>`
+    : `${session.completed}件の学習を終えました。`;
+  $('studyCard').innerHTML=`<div style="text-align:center;padding:32px"><div style="font-size:48px">✅</div><h2>${mastery?'セット完全クリア':'今日の学習完了'}</h2><p style="color:#667085">${detail}</p><button id="backHomeAfter" class="primary-btn">学習画面へ戻る</button></div>`;
+  $('backHomeAfter').onclick=()=>location.reload();
 }
 function hideStages(){ ['clozeStage','autoSentenceStage','recallStage','fixationStage','useStage','connectStage'].forEach(id=>$(id).classList.add('hidden')); }
 function getAutoSeconds(id,fallback){
@@ -440,32 +501,65 @@ function runAutoCountdown(seconds,token,onDone){
     }else el.textContent=remaining;
   },1000);
 }
-function runAutoAnswerTimer(seconds,token,onDone){
+function runAutoAnswerTimer(seconds,token,onReady){
   const el=$('autoAnswerTimer');
   const started=Date.now();
   let speechDone=false;
   let timeDone=false;
-  const maybeDone=()=>{
-    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
-    if(speechDone && timeDone) onDone();
+  let fired=false;
+  const maybeReady=()=>{
+    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence' || fired)return;
+    if(speechDone && timeDone){ fired=true; onReady(); }
   };
   const update=()=>{
     const elapsed=(Date.now()-started)/1000;
     const remain=Math.max(0,seconds-elapsed);
-    el.textContent=remain>0?`次の問題まで ${Math.ceil(remain)}秒`:'音声の終了を待っています…';
+    el.textContent=remain>0?`確認時間 あと ${Math.ceil(remain)}秒`:'音声の終了を待っています…';
     if(remain<=0){
       timeDone=true;
       if(autoAnswerTimer){clearInterval(autoAnswerTimer);autoAnswerTimer=null;}
-      maybeDone();
+      maybeReady();
     }
   };
   update();
   if(!timeDone) autoAnswerTimer=setInterval(update,200);
-  return ()=>{ speechDone=true; maybeDone(); };
+  return ()=>{ speechDone=true; maybeReady(); };
+}
+function updateAutoJudgeUi(ok){
+  const good=$('autoCorrectBtn'), bad=$('autoWrongBtn'), status=$('autoJudgeStatus');
+  good.classList.toggle('selected',ok===true);
+  bad.classList.toggle('selected',ok===false);
+  good.disabled=true;
+  bad.disabled=true;
+  status.textContent=ok?'✅ 間違えなかった':'❌ 間違えた';
+  status.className='auto-judge-status '+(ok?'good':'bad');
+}
+function maybeAdvanceAutoSentence(token){
+  if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
+  if(session.autoJudgment===null || !session.autoAnswerReady)return;
+  $('autoAnswerTimer').textContent='次の問題へ進みます';
+  setTimeout(()=>{
+    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
+    nextWord();
+  },180);
+}
+function judgeAutoSentence(ok){
+  if(!session || session.mode!=='auto-sentence' || session.autoJudgment!==null)return;
+  const w=getWord(session.currentId);
+  if(!w)return;
+  session.autoJudgment=!!ok;
+  recordRecallResult(w,!!ok,null);
+  markMasteryResult(w.id,!!ok);
+  updateAutoJudgeUi(!!ok);
+  persistState();
+  maybeAdvanceAutoSentence(session.autoToken);
 }
 function showAutoSentence(w){
   stopAutoPlayback();
   const token=autoSequenceToken;
+  session.autoToken=token;
+  session.autoJudgment=null;
+  session.autoAnswerReady=false;
   hideStages();
   $('autoSentenceStage').classList.remove('hidden');
   $('stageBadge').classList.add('hidden');
@@ -475,6 +569,12 @@ function showAutoSentence(w){
   $('autoEnglishWrap').classList.add('hidden');
   $('autoCountdown').textContent='…';
   $('autoAnswerTimer').textContent='';
+  $('autoCorrectBtn').disabled=false;
+  $('autoWrongBtn').disabled=false;
+  $('autoCorrectBtn').classList.remove('selected');
+  $('autoWrongBtn').classList.remove('selected');
+  $('autoJudgeStatus').textContent='';
+  $('autoJudgeStatus').className='auto-judge-status';
   const thinkSeconds=session?.autoThinkSeconds||getAutoSeconds('autoThinkSeconds',5);
   const answerSeconds=session?.autoAnswerSeconds||getAutoSeconds('autoAnswerSeconds',5);
   // 1) Show Japanese and read it aloud. 2) After Japanese audio ends, start thinking countdown.
@@ -486,14 +586,17 @@ function showAutoSentence(w){
       $('autoEnglishWrap').classList.remove('hidden');
       const markSpeechDone=runAutoAnswerTimer(answerSeconds,token,()=>{
         if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
-        session.completed++;
-        nextWord();
+        session.autoAnswerReady=true;
+        $('autoAnswerTimer').textContent=session.autoJudgment===null?'判定を選んでください':'確認完了';
+        maybeAdvanceAutoSentence(token);
       });
       // Keep the answer visible for at least the selected time and never cut the English audio short.
       speakEnglish(w.sentenceEn,markSpeechDone);
     });
   });
 }
+$('autoCorrectBtn').addEventListener('click',()=>judgeAutoSentence(true));
+$('autoWrongBtn').addEventListener('click',()=>judgeAutoSentence(false));
 
 function getClozeData(w){
   const manualSentence=(w.clozeSentence||'').trim();
@@ -609,26 +712,41 @@ function showRecall(w){
   session.recallStart=performance.now();
   setTimeout(()=>$('recallInput').focus(),100);
 }
+function recordRecallResult(w,ok,elapsedMs=null){
+  if(!w)return;
+  const r=w.stats.recall;
+  // Existing records used attempts as timed attempts. Freeze that baseline the
+  // first time the untimed auto-sentence mode contributes to the shared score.
+  if(!Number.isFinite(r.timedAttempts)) r.timedAttempts=r.attempts||0;
+  r.attempts++;
+  if(elapsedMs!==null){
+    r.totalMs+=Math.max(200,elapsedMs);
+    r.timedAttempts++;
+  }
+  if(ok){
+    r.correct++;
+    r.streak++;
+    r.wrongStreak=0;
+    r.lastCorrectAt=Date.now();
+    w.stats.level=Math.min(7,(w.stats.level||0)+1);
+    w.stats.nextDueAt=Date.now()+LEVEL_DAYS[w.stats.level]*DAY;
+  }else{
+    r.streak=0;
+    r.wrongStreak++;
+    r.lastWrongAt=Date.now();
+    w.stats.level=Math.max(0,(w.stats.level||0)-2);
+    w.stats.nextDueAt=Date.now();
+  }
+  w.updatedAt=Date.now();
+}
 function gradeRecall(w,ok,userInput=''){
   if(!session || !w)return;
   const elapsed=Math.max(200,performance.now()-session.recallStart);
-  const r=w.stats.recall;
-  r.attempts++;
-  r.totalMs+=elapsed;
-  if(ok){
-    r.correct++; r.streak++; r.wrongStreak=0; r.lastCorrectAt=Date.now();
-    w.stats.level=Math.min(7,(w.stats.level||0)+1);
-    w.stats.nextDueAt=Date.now()+LEVEL_DAYS[w.stats.level]*DAY;
-    saveState();
-    if(session.mode==='cloze') showClozeResult(w,true,userInput); else showFixation(w,true);
-  } else {
-    r.streak=0; r.wrongStreak++; r.lastWrongAt=Date.now();
-    w.stats.level=Math.max(0,(w.stats.level||0)-2);
-    w.stats.nextDueAt=Date.now();
-    scheduleRetry(w.id);
-    saveState();
-    if(session.mode==='cloze') showClozeResult(w,false,userInput); else showFixation(w,false,userInput);
-  }
+  recordRecallResult(w,ok,elapsed);
+  if(isMasterySession()) markMasteryResult(w.id,ok);
+  else if(!ok) scheduleRetry(w.id);
+  saveState();
+  if(session.mode==='cloze') showClozeResult(w,ok,userInput); else showFixation(w,ok,userInput);
 }
 $('recallForm').addEventListener('submit',e=>{
   e.preventDefault();
@@ -681,7 +799,16 @@ function showFixation(w,wasCorrect,userInput=''){
     }
   };
 }
-function completeCurrent(){ session.completed++; saveState(); nextWord(); }
+function completeCurrent(){
+  if(!session)return;
+  if(isMasterySession()){
+    nextWord();
+    return;
+  }
+  session.completed++;
+  saveState();
+  nextWord();
+}
 
 function showUse(w){
   hideStages(); $('useStage').classList.remove('hidden'); $('stageBadge').classList.remove('hidden'); $('stageBadge').textContent='2️⃣ USE'; $('useTarget').textContent=w.word; $('sentenceJa').textContent=w.sentenceJa; $('useInput').value=''; $('useFeedback').className='feedback hidden'; setTimeout(()=>$('useInput').focus(),100);
