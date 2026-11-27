@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#111827" />
   <title>Word Recall</title>
-  <link rel="stylesheet" href="styles.css?v=0.7.7" />
+  <link rel="stylesheet" href="styles.css?v=0.7.8" />
 </head>
 <body>
   <header class="app-header">
     <div>
       <div class="eyebrow">CORE IMAGE VOCAB</div>
-      <h1>Word Recall</h1>
+      <h1>Word Recall <small class="app-version">v0.7.8</small></h1>
     </div>
     <nav>
       <button class="nav-btn active" data-view="home">学習</button>
@@ -20,7 +20,8 @@
       <button class="nav-btn" data-view="backup">バックアップ</button>
     </nav>
   </header>
-  <main>
+  <div id="loadStatus" role="status" class="load-status">保存データを読み込み中…</div>
+  <main inert>
     <section id="view-home" class="view active">
       <div class="hero card">
         <div>
@@ -46,7 +47,7 @@
           <div class="mode-icon">🎧</div>
           <h3>自動瞬間英作文</h3>
           <p><b>日本語を聞く → 頭で英作文 → 英文を聞く</b></p>
-          <small>タイピングなし・画像なし。時間内に自己判定。未選択は自動で「間違い」</small>
+          <small>タイピングなし・画像なし。自己判定するまで待機。判定したらすぐ次へ</small>
         </button>
       </div>
       <div class="study-options card compact">
@@ -70,7 +71,7 @@
             <option value="10">10秒</option>
           </select>
         </label>
-        <label>英文表示時間
+        <label>英文確認カウント
           <select id="autoAnswerSeconds">
             <option value="3">3秒</option>
             <option value="5" selected>5秒</option>
@@ -78,7 +79,7 @@
             <option value="10">10秒</option>
           </select>
         </label>
-        <small>英文を確認したら「間違えなかった / 間違えた」を選択。間違えた問題だけ次周で再出題します。</small>
+        <small>0秒でも英文は消えず、判定を待ちます。○ / × を押すとすぐ次へ。</small>
       </div>
       <div id="noWordsNotice" class="empty-state hidden">
         まだ単語がありません。「単語管理」から最初の単語を登録してください。
@@ -88,7 +89,7 @@
       <div class="study-topbar">
         <button id="quitStudy" class="ghost-btn">← 終了</button>
         <div id="studyModeLabel" class="pill"></div>
-        <div id="studyProgress">0 / 0</div>
+        <div id="studyProgress" role="status" aria-live="polite">1周目 ｜ クリア 0/0 ｜ 残り 0</div>
       </div>
       <div class="progress-track"><div id="progressBar"></div></div>
       <div id="studyCard" class="study-card card">
@@ -109,7 +110,7 @@
           <p class="prompt-label">日本語を聞いて、英文を頭の中で作る</p>
           <div id="autoSentenceJa" class="auto-sentence-ja"></div>
           <div id="autoThinkWrap" class="auto-think-wrap">
-            <div class="auto-phase-label">英文を考える</div>
+            <div id="autoPhaseLabel" class="auto-phase-label">英文を考える</div>
             <div id="autoCountdown" class="auto-countdown" aria-live="polite">5</div>
           </div>
           <div id="autoEnglishWrap" class="auto-english-wrap hidden" aria-live="polite">
@@ -158,6 +159,13 @@
             <button class="primary-btn" type="submit">判定</button>
           </form>
           <div id="useFeedback" class="feedback hidden"></div>
+        </div>
+        <div id="finishStage" class="stage hidden session-finish">
+          <div class="session-finish-icon">✅</div>
+          <h2 id="finishTitle"></h2>
+          <p id="finishDetail"></p>
+          <p id="finishMeta" class="session-finish-meta"></p>
+          <button id="backHomeAfter" class="primary-btn" type="button">学習画面へ戻る</button>
         </div>
         <div id="connectStage" class="stage hidden">
           <p class="prompt-label">3️⃣ CONNECT：最も意味が近い単語は？</p>
@@ -257,7 +265,7 @@
     </form>
   </dialog>
   <div id="toast" class="toast hidden"></div>
-  <script src="app.js?v=0.7.7"></script>
+  <script src="app.js?v=0.7.8"></script>
   <script src="ui-v0.6.js?v=0.7.1"></script>
 </body>
 </html>

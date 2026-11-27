@@ -67,3 +67,14 @@
 .auto-judge-status.bad{color:var(--bad)}
 .session-finish-meta{display:inline-block;margin-top:8px;font-size:13px;color:var(--muted)}
 @media(max-width:520px){.auto-judge-actions{grid-template-columns:1fr}.auto-judge-btn{min-height:50px}}
+
+
+/* v0.7.8: explicit mastery progress and reusable completion screen */
+.app-version{font-size:11px;font-weight:700;color:var(--muted);white-space:nowrap}
+.load-status{max-width:1080px;margin:20px auto;padding:16px 20px;color:var(--muted)}
+#studyProgress{font-weight:800;font-size:14px;text-align:right;font-variant-numeric:tabular-nums}
+.session-finish{text-align:center;padding:24px 8px}
+.session-finish-icon{font-size:48px}
+.session-finish-meta{color:var(--muted);font-size:14px}
+#autoAnswerTimer{min-height:1.5em}
+@media(max-width:640px){.study-topbar{flex-wrap:wrap}#studyProgress{flex-basis:100%;text-align:center;font-size:14px}}

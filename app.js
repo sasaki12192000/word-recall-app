@@ -9,6 +9,7 @@ const DAY = 86400000;
 const LEVEL_DAYS = [0,1,3,7,14,30,60,120];
 let state = defaultState();
 let session = null;
+let appReady = false;
 let pendingBulkData = null;
 let dbPromise = null;
 let saveChain = Promise.resolve();
@@ -148,7 +149,7 @@ async function loadState(){
     raw=await readRawState();
   }catch(e){
     console.error('IndexedDB load failed',e);
-    return defaultState();
+    throw e; // Never allow an empty session to overwrite an unreadable database.
   }
   if(!raw) return defaultState();
   const migrated=migrate(raw);
@@ -376,7 +377,7 @@ function renderStats(){
 }
 
 function showView(name){
-  if(name!=='study' && session?.mode==='auto-sentence'){ stopAutoPlayback(); session=null; }
+  if(name!=='study' && session){ stopAutoPlayback(); session=null; renderAll(); }
   $$('.view').forEach(v=>v.classList.remove('active')); const v=$('view-'+name); if(v)v.classList.add('active');
   $$('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
 }
@@ -393,22 +394,35 @@ function weightedOrder(words){
     return {w,key:Math.pow(Math.random(),1/Math.max(1,score))};
   }).sort((a,b)=>b.key-a.key).map(x=>x.w);
 }
+// Weighted sampling without replacement: each eligible ID appears once.
+// Within the eligible pool, lower shared accuracy always means greater weight.
+function selectMasteryIds(candidates,size){
+  const unique=[...new Map(candidates.map(w=>[w.id,w])).values()];
+  return unique.map(w=>{
+    const r=w.stats.recall;
+    const rate=r.attempts?Math.max(0,Math.min(1,r.correct/r.attempts)):0;
+    const weight=1+9*(1-rate);
+    return {id:w.id,key:-Math.log(Math.max(Number.MIN_VALUE,Math.random()))/weight};
+  }).sort((a,b)=>a.key-b.key).slice(0,size==='all'?unique.length:Number(size)).map(x=>x.id);
+}
 function startStudy(mode){
+  if(!appReady)return;
   if(!state.words.length){ toast('先に単語を登録してください'); showView('words'); return; }
   const now=Date.now(), includeEarly=$('includeEarly').checked;
   const needsSentence=mode==='cloze' || mode==='auto-sentence';
   let candidates=state.words.filter(w=>(!needsSentence || (w.sentenceJa && w.sentenceEn)) && (includeEarly || (w.stats.nextDueAt||0)<=now));
   if(!candidates.length){ toast('今日の復習対象はありません。「復習日前も追加練習」をONにできます。'); return; }
-  candidates=weightedOrder(candidates);
-  const size=$('sessionSize').value; if(size!=='all') candidates=candidates.slice(0,Number(size));
+  const size=$('sessionSize').value;
+  const ids=needsSentence?selectMasteryIds(candidates,size):weightedOrder(candidates).slice(0,size==='all'?candidates.length:Number(size)).map(w=>w.id);
   stopAutoPlayback();
-  const ids=candidates.map(w=>w.id);
+  if(size!=='all' && ids.length<Number(size)) toast(`対象カードが ${ids.length} 枚のため、その枚数で開始します`);
   session={
     mode,
     queue:[...ids],
     index:0,
-    initialIds:[...ids],
-    remainingIds:[...ids],
+    initialIds:Object.freeze([...ids]),
+    pendingIds:new Set(ids),
+    phase:'starting',
     initialCount:ids.length,
     completed:0,
     currentId:null,
@@ -416,10 +430,8 @@ function startStudy(mode){
     requeued:{},
     roundNumber:1,
     attemptCount:0,
-    autoJudgment:null,
-    autoAnswerReady:false,
-    autoThinkSeconds:Number($('autoThinkSeconds')?.value||5),
-    autoAnswerSeconds:Number($('autoAnswerSeconds')?.value||5)
+    autoThinkSeconds:getAutoSeconds('autoThinkSeconds',5),
+    autoAnswerSeconds:getAutoSeconds('autoAnswerSeconds',5)
   };
   $('studyModeLabel').textContent= mode==='cloze'?'⌨️ 文脈タイピング':mode==='auto-sentence'?'🎧 自動瞬間英作文':mode==='recall'?'⚡ 単語集中':mode==='recall-use'?'🔹 標準学習':'🔥 深掘り学習';
   showView('study'); nextWord();
@@ -429,20 +441,23 @@ $('quitStudy').onclick=()=>{ stopAutoPlayback(); session=null; showView('home');
 
 function getWord(id){ return state.words.find(w=>w.id===id); }
 function isMasterySession(){ return !!session && (session.mode==='cloze' || session.mode==='auto-sentence'); }
+// Only the current unanswered card can be judged. A correct ID is deleted
+// permanently from the pending set; nothing can add IDs during a session.
 function markMasteryResult(id,ok){
-  if(!isMasterySession())return;
-  session.attemptCount=(session.attemptCount||0)+1;
-  if(ok) session.remainingIds=(session.remainingIds||[]).filter(x=>x!==id);
-  else if(!(session.remainingIds||[]).includes(id)) session.remainingIds.push(id);
+  if(!isMasterySession() || session.phase!=='question' || session.currentId!==id || !session.pendingIds.has(id))return false;
+  session.phase='graded';
+  session.attemptCount++;
+  if(ok) session.pendingIds.delete(id);
   updateStudyProgress();
+  return true;
 }
 function updateStudyProgress(){
   if(!session)return;
   if(isMasterySession()){
-    const total=session.initialCount||0;
-    const remaining=(session.remainingIds||[]).length;
-    const mastered=Math.max(0,total-remaining);
-    $('studyProgress').textContent=`残り ${remaining} / ${total} ・ ${session.roundNumber||1}周目`;
+    const total=session.initialCount;
+    const remaining=session.pendingIds.size;
+    const mastered=total-remaining;
+    $('studyProgress').textContent=`${session.roundNumber}周目 ｜ クリア ${mastered}/${total} ｜ 残り ${remaining}`;
     $('progressBar').style.width=`${total?mastered/total*100:0}%`;
     return;
   }
@@ -451,160 +466,128 @@ function updateStudyProgress(){
   $('progressBar').style.width=`${p}%`;
 }
 function nextWord(){
-  if(!session)return;
-  if(session.index>=session.queue.length){
-    if(isMasterySession() && (session.remainingIds||[]).length){
-      const remainingWords=session.remainingIds.map(getWord).filter(Boolean);
-      session.queue=weightedOrder(remainingWords).map(w=>w.id);
+  if(!session || session.phase==='finished')return;
+  if(isMasterySession()){
+    if(!['starting','graded'].includes(session.phase))return;
+    if(!session.pendingIds.size){ finishSession(); return; }
+    // All questions of the current round are served once. Next round is a
+    // subset of the original frozen IDs, containing only unmastered cards.
+    if(session.index>=session.queue.length){
+      session.queue=session.initialIds.filter(id=>session.pendingIds.has(id));
       session.index=0;
-      session.roundNumber=(session.roundNumber||1)+1;
-      updateStudyProgress();
-      toast(`${session.roundNumber}周目：間違えた ${session.remainingIds.length}問だけ再挑戦`);
-    }else{
-      finishSession();
-      return;
+      session.roundNumber++;
+      toast(`${session.roundNumber}周目：間違えた ${session.pendingIds.size}問だけ再挑戦`);
     }
-  }
+  }else if(session.index>=session.queue.length){ finishSession(); return; }
   session.currentId=session.queue[session.index++];
+  session.phase='question';
   updateStudyProgress();
   const w=getWord(session.currentId);
   if(session.mode==='cloze') showCloze(w); else if(session.mode==='auto-sentence') showAutoSentence(w); else showRecall(w);
 }
 function finishSession(){
+  if(!session || session.phase==='finished')return;
   stopAutoPlayback();
-  $('progressBar').style.width='100%';
   const mastery=isMasterySession();
-  const detail=mastery
-    ? `${session.initialCount}問すべて「間違えなかった」になるまで完了しました。<br><span class="session-finish-meta">${session.roundNumber||1}周・合計${session.attemptCount||0}回答</span>`
-    : `${session.completed}件の学習を終えました。`;
-  $('studyCard').innerHTML=`<div style="text-align:center;padding:32px"><div style="font-size:48px">✅</div><h2>${mastery?'セット完全クリア':'今日の学習完了'}</h2><p style="color:#667085">${detail}</p><button id="backHomeAfter" class="primary-btn">学習画面へ戻る</button></div>`;
-  $('backHomeAfter').onclick=()=>location.reload();
+  session.phase='finished';
+  session.currentId=null;
+  hideStages();
+  $('stageBadge').classList.add('hidden');
+  $('progressBar').style.width='100%';
+  $('finishTitle').textContent=mastery?'セット完全クリア':'今日の学習完了';
+  $('finishDetail').textContent=mastery?`${session.initialCount}問すべてクリアしました。`:`${session.completed}件の学習を終えました。`;
+  $('finishMeta').textContent=mastery?`${session.roundNumber}周・合計${session.attemptCount}回答`:'';
+  $('finishStage').classList.remove('hidden');
+  renderAll();
 }
-function hideStages(){ ['clozeStage','autoSentenceStage','recallStage','fixationStage','useStage','connectStage'].forEach(id=>$(id).classList.add('hidden')); }
+$('backHomeAfter').onclick=()=>showView('home');
+function hideStages(){ ['clozeStage','autoSentenceStage','recallStage','fixationStage','useStage','connectStage','finishStage'].forEach(id=>$(id).classList.add('hidden')); }
 function getAutoSeconds(id,fallback){
   const n=Number($(id)?.value||fallback);
   return [3,5,7,10].includes(n)?n:fallback;
 }
+function isCurrentAuto(token){
+  return token===autoSequenceToken && session?.mode==='auto-sentence' && session.autoToken===token && session.phase==='question';
+}
 function runAutoCountdown(seconds,token,onDone){
+  const deadline=Date.now()+seconds*1000;
   const el=$('autoCountdown');
-  let remaining=Math.max(1,seconds);
-  el.textContent=remaining;
-  if(autoCountdownTimer){ clearInterval(autoCountdownTimer); autoCountdownTimer=null; }
-  autoCountdownTimer=setInterval(()=>{
-    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence'){
-      clearInterval(autoCountdownTimer); autoCountdownTimer=null; return;
-    }
-    remaining--;
-    if(remaining<=0){
-      clearInterval(autoCountdownTimer); autoCountdownTimer=null;
+  el.textContent=seconds;
+  const timer=setInterval(()=>{
+    if(!isCurrentAuto(token)){ clearInterval(timer); return; }
+    const remaining=Math.max(0,Math.ceil((deadline-Date.now())/1000));
+    el.textContent=remaining;
+    if(remaining===0){
+      clearInterval(timer);
+      if(autoCountdownTimer===timer)autoCountdownTimer=null;
       onDone();
-    }else el.textContent=remaining;
-  },1000);
-}
-function runAutoAnswerTimer(seconds,token,onTimeDone,onReady){
-  const el=$('autoAnswerTimer');
-  const started=Date.now();
-  let speechDone=false;
-  let timeDone=false;
-  let timeNotified=false;
-  let fired=false;
-  const notifyTimeDone=()=>{
-    if(timeNotified)return;
-    timeNotified=true;
-    if(typeof onTimeDone==='function') onTimeDone();
-  };
-  const maybeReady=()=>{
-    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence' || fired)return;
-    if(speechDone && timeDone){ fired=true; onReady(); }
-  };
-  const update=()=>{
-    const elapsed=(Date.now()-started)/1000;
-    const remain=Math.max(0,seconds-elapsed);
-    el.textContent=remain>0?`確認時間 あと ${Math.ceil(remain)}秒`:'音声の終了を待っています…';
-    if(remain<=0){
-      timeDone=true;
-      if(autoAnswerTimer){clearInterval(autoAnswerTimer);autoAnswerTimer=null;}
-      notifyTimeDone();
-      maybeReady();
     }
-  };
-  update();
-  if(!timeDone) autoAnswerTimer=setInterval(update,200);
-  return ()=>{ speechDone=true; maybeReady(); };
+  },100);
+  autoCountdownTimer=timer;
 }
-function updateAutoJudgeUi(ok,autoTimeout=false){
-  const good=$('autoCorrectBtn'), bad=$('autoWrongBtn'), status=$('autoJudgeStatus');
-  good.classList.toggle('selected',ok===true);
-  bad.classList.toggle('selected',ok===false);
-  good.disabled=true;
-  bad.disabled=true;
-  status.textContent=autoTimeout?'⏱️ 時間切れ → 間違い扱い':(ok?'✅ 間違えなかった':'❌ 間違えた');
-  status.className='auto-judge-status '+(ok?'good':'bad');
+function runAutoAnswerTimer(seconds,token){
+  const deadline=Date.now()+seconds*1000;
+  const el=$('autoAnswerTimer');
+  el.textContent=`確認時間 あと ${seconds}秒`;
+  const timer=setInterval(()=>{
+    if(!isCurrentAuto(token)){ clearInterval(timer); return; }
+    const remaining=Math.max(0,Math.ceil((deadline-Date.now())/1000));
+    el.textContent=remaining>0?`確認時間 あと ${remaining}秒`:'確認時間 0秒 ・ 正誤判定を待っています';
+    if(remaining===0){
+      clearInterval(timer);
+      if(autoAnswerTimer===timer)autoAnswerTimer=null;
+      // No grading, audio dependency, or automatic advancement here.
+    }
+  },100);
+  autoAnswerTimer=timer;
 }
-function maybeAdvanceAutoSentence(token){
-  if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
-  if(session.autoJudgment===null || !session.autoAnswerReady)return;
-  $('autoAnswerTimer').textContent='次の問題へ進みます';
-  setTimeout(()=>{
-    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
-    nextWord();
-  },180);
-}
-function judgeAutoSentence(ok,autoTimeout=false){
-  if(!session || session.mode!=='auto-sentence' || session.autoJudgment!==null)return;
+function judgeAutoSentence(ok){
+  if(!session || !isCurrentAuto(session.autoToken) || session.autoPhase!=='answer')return;
   const w=getWord(session.currentId);
-  if(!w)return;
-  session.autoJudgment=!!ok;
+  if(!w || !markMasteryResult(w.id,!!ok))return;
+  session.autoPhase='graded';
+  $('autoCorrectBtn').disabled=true;
+  $('autoWrongBtn').disabled=true;
   recordRecallResult(w,!!ok,null);
-  markMasteryResult(w.id,!!ok);
-  updateAutoJudgeUi(!!ok,autoTimeout);
   persistState();
-  maybeAdvanceAutoSentence(session.autoToken);
+  // nextWord synchronously changes the question (or finishes the session).
+  // showAutoSentence/finishSession cancel old timers and speech first.
+  nextWord();
 }
 function showAutoSentence(w){
   stopAutoPlayback();
   const token=autoSequenceToken;
   session.autoToken=token;
-  session.autoJudgment=null;
-  session.autoAnswerReady=false;
+  session.autoPhase='japanese';
   hideStages();
   $('autoSentenceStage').classList.remove('hidden');
   $('stageBadge').classList.add('hidden');
   $('autoSentenceJa').textContent=(w.sentenceJa||'').trim();
-  $('autoSentenceEn').textContent=(w.sentenceEn||'').trim();
+  $('autoSentenceEn').textContent='';
   $('autoThinkWrap').classList.remove('hidden');
   $('autoEnglishWrap').classList.add('hidden');
   $('autoCountdown').textContent='…';
+  $('autoPhaseLabel').textContent='日本語を聞く';
   $('autoAnswerTimer').textContent='';
-  $('autoCorrectBtn').disabled=false;
-  $('autoWrongBtn').disabled=false;
-  $('autoCorrectBtn').classList.remove('selected');
-  $('autoWrongBtn').classList.remove('selected');
+  $('autoCorrectBtn').disabled=true;
+  $('autoWrongBtn').disabled=true;
   $('autoJudgeStatus').textContent='';
   $('autoJudgeStatus').className='auto-judge-status';
-  const thinkSeconds=session?.autoThinkSeconds||getAutoSeconds('autoThinkSeconds',5);
-  const answerSeconds=session?.autoAnswerSeconds||getAutoSeconds('autoAnswerSeconds',5);
-  // 1) Show Japanese and read it aloud. 2) After Japanese audio ends, start thinking countdown.
+  // Keep the full thinking time after Japanese narration, as in v0.7.7.
   speakJapanese(w.sentenceJa,()=>{
-    if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
-    runAutoCountdown(thinkSeconds,token,()=>{
-      if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
+    if(!isCurrentAuto(token) || session.autoPhase!=='japanese')return;
+    session.autoPhase='thinking';
+    $('autoPhaseLabel').textContent='英文を考える';
+    runAutoCountdown(session.autoThinkSeconds,token,()=>{
+      if(!isCurrentAuto(token) || session.autoPhase!=='thinking')return;
+      session.autoPhase='answer';
       $('autoThinkWrap').classList.add('hidden');
+      $('autoSentenceEn').textContent=(w.sentenceEn||'').trim();
       $('autoEnglishWrap').classList.remove('hidden');
-      const markSpeechDone=runAutoAnswerTimer(answerSeconds,token,()=>{
-        if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
-        // If the learner did not judge within the answer-display countdown,
-        // automatically record it as wrong. The English audio is still allowed
-        // to finish before moving to the next question.
-        if(session.autoJudgment===null) judgeAutoSentence(false,true);
-      },()=>{
-        if(token!==autoSequenceToken || !session || session.mode!=='auto-sentence')return;
-        session.autoAnswerReady=true;
-        $('autoAnswerTimer').textContent='確認完了';
-        maybeAdvanceAutoSentence(token);
-      });
-      // Keep the answer visible for at least the selected time and never cut the English audio short.
-      speakEnglish(w.sentenceEn,markSpeechDone);
+      $('autoCorrectBtn').disabled=false;
+      $('autoWrongBtn').disabled=false;
+      runAutoAnswerTimer(session.autoAnswerSeconds,token);
+      speakEnglish(w.sentenceEn);
     });
   });
 }
@@ -651,7 +634,6 @@ function showCloze(w){
   $('clozeSubmitBtn').textContent='判定（Enter）';
   $('clozeDontKnowBtn').classList.remove('hidden');
   showStoredImage(w,'clozeImage','clozeImageWrap');
-  session.clozeAnswered=false;
   session.recallStart=performance.now();
   // iOS will not open the software keyboard before the user's first gesture.
   // Once the learner has tapped the field, however, keeping the same input
@@ -660,7 +642,7 @@ function showCloze(w){
 }
 function focusClozeInput(){
   const input=$('clozeInput');
-  if(!input)return;
+  if(!input || session?.mode!=='cloze' || session.phase==='finished' || !$('view-study').classList.contains('active'))return;
   try{ input.focus({preventScroll:true}); }catch(_){ input.focus(); }
 }
 function showClozeResult(w,wasCorrect,userInput=''){
@@ -677,15 +659,14 @@ function showClozeResult(w,wasCorrect,userInput=''){
   f.innerHTML=`<div class="cloze-result-status">${wasCorrect?'✅ 正解':'❌ 不正解'}</div>${wrongLine}<div class="cloze-result-answer">正解：<b>${escapeHtml(c.answer)}</b></div>${coreLine}<div class="cloze-result-sentence">${escapeHtml(completed)}</div><div class="cloze-result-hint">Enterでもう一度 → 次の問題</div>`;
   $('clozeSubmitBtn').textContent='次の問題（Enter）';
   $('clozeDontKnowBtn').classList.add('hidden');
-  session.clozeAnswered=true;
   speakEnglish(completed||c.answer||w.word);
   // Do not hide/replace the input: losing this element's focus closes the iOS keyboard.
   requestAnimationFrame(()=>focusClozeInput());
 }
 $('clozeForm').addEventListener('submit',e=>{
   e.preventDefault();
-  if(!session)return;
-  if(session.clozeAnswered){
+  if(session?.mode!=='cloze' || session.phase==='finished')return;
+  if(session.phase==='graded'){
     completeCurrent();
     requestAnimationFrame(()=>focusClozeInput());
     return;
@@ -697,11 +678,13 @@ $('clozeForm').addEventListener('submit',e=>{
   gradeRecall(w,normalizeSentence(input)===normalizeSentence(c.answer),input);
 });
 $('clozeDontKnowBtn').addEventListener('click',()=>{
-  if(!session)return;
-  if(session.clozeAnswered)return;
+  if(session?.mode!=='cloze' || session.phase!=='question')return;
   gradeRecall(getWord(session.currentId),false,'');
   requestAnimationFrame(()=>focusClozeInput());
 });
+// Suppress held Enter and double-clicks without replacing/blur-ing the input.
+$('clozeForm').addEventListener('keydown',e=>{ if(e.key==='Enter' && (e.repeat || e.isComposing))e.preventDefault(); });
+$('clozeSubmitBtn').addEventListener('click',e=>{ if(e.detail>1)e.preventDefault(); });
 // Prevent tapping the two cloze buttons from stealing focus from the text field.
 ['clozeSubmitBtn','clozeDontKnowBtn'].forEach(id=>{
   $(id).addEventListener('pointerdown',e=>e.preventDefault());
@@ -755,9 +738,9 @@ function recordRecallResult(w,ok,elapsedMs=null){
 function gradeRecall(w,ok,userInput=''){
   if(!session || !w)return;
   const elapsed=Math.max(200,performance.now()-session.recallStart);
+  if(isMasterySession() && !markMasteryResult(w.id,ok))return;
   recordRecallResult(w,ok,elapsed);
-  if(isMasterySession()) markMasteryResult(w.id,ok);
-  else if(!ok) scheduleRetry(w.id);
+  if(!isMasterySession() && !ok) scheduleRetry(w.id);
   saveState();
   if(session.mode==='cloze') showClozeResult(w,ok,userInput); else showFixation(w,ok,userInput);
 }
@@ -1192,7 +1175,13 @@ async function init(){
     catch(err){ console.warn('Japanese cloze target migration could not be persisted',err); }
   }
   renderAll();
+  appReady=true;
+  document.querySelector('main').removeAttribute('inert');
+  $('loadStatus').classList.add('hidden');
   if(migrationWarning) setTimeout(()=>toast('画像移行が途中です。データは保持されています。空き容量を確保して再読み込みしてください。'),250);
   else if(migratedImageCount>0) setTimeout(()=>toast(`既存画像 ${migratedImageCount}枚を安全に分離保存しました`),250);
 }
-init();
+init().catch(err=>{
+  console.error('Word Recall initialization failed',err);
+  $('loadStatus').textContent='保存データを読み込めませんでした。データ保護のため操作を停止しました。同じURLで再読み込みしてください。';
+});
